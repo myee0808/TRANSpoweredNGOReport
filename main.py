@@ -104,7 +104,6 @@ def search_ngo_data(payload: SearchQuery):
     user_id = payload.user_id.strip() if payload.user_id else "default_user"
     encoded_user_query = urllib.parse.quote(user_query)
     
-    # Point system increment logic for MIT App Inventor TinyWebDB
     point_tag = f"points_{user_id}"
     current_points = int(database.get(point_tag, "0"))
     new_points = current_points + 1
@@ -167,13 +166,12 @@ def search_ngo_data(payload: SearchQuery):
         "results": results
     }
 
-# Dedicated points check API endpoint for App Inventor / Web
 @app.get("/api/points/{user_id}")
 def get_user_points(user_id: str):
     points = database.get(f"points_{user_id}", "0")
     return {"user_id": user_id, "points": int(points)}
 
-# --- 2. ANINAG WEB FRONTEND ---
+# --- 2. ANINAG WEB FRONTEND WITH EARTHY COLOR PALETTE ---
 @app.get("/", response_class=HTMLResponse)
 def home():
     return """<!DOCTYPE html>
@@ -184,28 +182,59 @@ def home():
     <title>AnInag - NGO Transparency & Research Portal</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        :root { --primary: #0f172a; --brand: #16a34a; --bg: #f8fafc; --border: #e2e8f0; --text-main: #1e293b; --text-muted: #64748b; }
+        :root {
+            --primary: #5B3A29;
+            --brand: #A76D4D;
+            --brand-dark: #8F4E3E;
+            --bg: #F0F0DF;
+            --card-bg: #FFFFFF;
+            --border: #E0DCBE;
+            --text-main: #5B3A29;
+            --text-muted: #AF8A69;
+            --accent-cream: #D9CBAE;
+            --badge-bg: #E4CDAF;
+        }
+
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
         body { background-color: var(--bg); color: var(--text-main); min-height: 100vh; }
-        header { background: white; border-bottom: 1px solid var(--border); padding: 16px 32px; display: flex; justify-content: space-between; align-items: center; }
+        
+        header { background: var(--card-bg); border-bottom: 2px solid var(--border); padding: 16px 32px; display: flex; justify-content: space-between; align-items: center; }
         .logo { font-size: 1.4rem; font-weight: 800; color: var(--primary); display: flex; align-items: center; gap: 8px; }
-        .logo span { background: var(--brand); color: white; padding: 2px 8px; border-radius: 6px; font-size: 0.75rem; }
-        .user-points-badge { background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; padding: 6px 14px; border-radius: 20px; font-weight: 700; font-size: 0.9rem; }
+        .logo span { background: var(--brand); color: #fff; padding: 2px 8px; border-radius: 6px; font-size: 0.75rem; }
+        
+        .user-points-badge { background: var(--accent-cream); border: 1px solid var(--border); color: var(--primary); padding: 6px 14px; border-radius: 20px; font-weight: 700; font-size: 0.9rem; }
+        
         .hero-section { max-width: 900px; margin: 40px auto 20px; padding: 0 20px; text-align: center; }
+        .hero-section h1 { color: var(--primary); }
+        .hero-section p { color: var(--text-muted); }
+
         .user-id-bar { max-width: 900px; margin: 0 auto 12px; padding: 0 20px; display: flex; justify-content: flex-end; align-items: center; gap: 8px; font-size: 0.85rem; color: var(--text-muted); }
-        .user-id-input { border: 1px solid var(--border); padding: 6px 10px; border-radius: 6px; outline: none; font-weight: 600; color: var(--primary); }
-        .search-box { background: white; border: 2px solid var(--border); border-radius: 16px; padding: 8px 12px; display: flex; align-items: center; }
-        .search-input { border: none; outline: none; width: 100%; font-size: 1rem; padding: 12px; }
-        .search-btn { background: var(--brand); color: white; border: none; padding: 12px 24px; border-radius: 10px; font-weight: 600; cursor: pointer; }
-        .repositories-bar { max-width: 900px; margin: 0 auto 20px; padding: 16px 20px; background: white; border: 1px solid var(--border); border-radius: 12px; }
-        .repo-chip { background: #f1f5f9; border: 1px solid var(--border); padding: 4px 10px; border-radius: 20px; font-size: 0.75rem; color: var(--text-main); text-decoration: none; display: inline-block; margin: 2px; }
+        .user-id-input { border: 1px solid var(--border); background: var(--card-bg); padding: 6px 10px; border-radius: 6px; outline: none; font-weight: 600; color: var(--primary); }
+        
+        .search-box { background: var(--card-bg); border: 2px solid var(--border); border-radius: 16px; padding: 8px 12px; display: flex; align-items: center; box-shadow: 0 4px 12px rgba(91, 58, 41, 0.05); }
+        .search-box:focus-within { border-color: var(--brand); }
+        .search-input { border: none; outline: none; width: 100%; font-size: 1rem; padding: 12px; background: transparent; color: var(--primary); }
+        .search-btn { background: var(--brand); color: #fff; border: none; padding: 12px 24px; border-radius: 10px; font-weight: 600; cursor: pointer; transition: background 0.2s; }
+        .search-btn:hover { background: var(--brand-dark); }
+        
+        .repositories-bar { max-width: 900px; margin: 0 auto 20px; padding: 16px 20px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; }
+        .repo-chip { background: var(--accent-cream); border: 1px solid var(--border); padding: 4px 10px; border-radius: 20px; font-size: 0.75rem; color: var(--primary); text-decoration: none; display: inline-block; margin: 2px; font-weight: 500; }
+        .repo-chip:hover { background: var(--brand); color: #fff; }
+        
         .main-content { max-width: 900px; margin: 20px auto 60px; padding: 0 20px; }
-        .ai-synthesis-box { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 12px; padding: 20px; margin-bottom: 20px; }
-        .consensus-meter { background: white; border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 24px; }
-        .result-card { background: white; border: 1px solid var(--border); border-radius: 12px; padding: 24px; margin-bottom: 16px; }
-        .card-badge { background: #dcfce7; color: #166534; padding: 2px 8px; border-radius: 4px; font-weight: 600; font-size: 0.8rem; }
-        .takeaway-box { background: #f8fafc; border-left: 3px solid var(--brand); padding: 12px 16px; margin: 10px 0; }
+        
+        .ai-synthesis-box { background: var(--card-bg); border: 2px solid var(--accent-cream); border-radius: 12px; padding: 20px; margin-bottom: 20px; }
+        .ai-synthesis-title { font-size: 0.85rem; font-weight: 700; color: var(--brand); text-transform: uppercase; margin-bottom: 8px; }
+        .ai-synthesis-text { font-size: 0.95rem; color: var(--primary); line-height: 1.6; }
+
+        .consensus-meter { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 24px; }
+        
+        .result-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 24px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(91, 58, 41, 0.03); }
+        .card-badge { background: var(--badge-bg); color: var(--primary); padding: 2px 8px; border-radius: 4px; font-weight: 600; font-size: 0.8rem; }
+        
+        .takeaway-box { background: var(--bg); border-left: 3px solid var(--brand); padding: 12px 16px; margin: 10px 0; border-radius: 0 8px 8px 0; }
         .source-link { color: var(--brand); text-decoration: none; font-weight: 600; font-size: 0.9rem; }
+        .source-link:hover { text-decoration: underline; color: var(--brand-dark); }
     </style>
 </head>
 <body>
@@ -213,13 +242,13 @@ def home():
         <div class="logo">AnInag <span>Civic Points System</span></div>
         <div style="display:flex; align-items:center; gap:16px;">
             <div class="user-points-badge" id="headerPointsBadge">⭐ Points: 0</div>
-            <a href="/docs" style="color:#64748b; text-decoration:none;">API Docs</a>
+            <a href="/docs" style="color:var(--text-muted); text-decoration:none; font-weight:500;">API Docs</a>
         </div>
     </header>
 
     <div class="hero-section">
         <h1 style="font-size: 2.25rem; margin-bottom: 12px;">AnInag Research & Reward Portal</h1>
-        <p style="color: #64748b; margin-bottom: 20px;">Earn points recorded on your MIT App for every transparency search conducted.</p>
+        <p style="margin-bottom: 20px;">Earn points recorded on your MIT App for every transparency search conducted.</p>
         
         <div class="user-id-bar">
             <label for="userIdInput">App User ID / Tag:</label>
@@ -233,7 +262,7 @@ def home():
     </div>
 
     <div class="repositories-bar">
-        <div style="font-size: 0.75rem; font-weight: 700; color: #64748b; text-transform: uppercase; margin-bottom: 8px;">Target Repositories</div>
+        <div style="font-size: 0.75rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; margin-bottom: 8px;">Target Repositories</div>
         <a class="repo-chip" href="https://www.officialgazette.gov.ph/" target="_blank">Official Gazette ↗</a>
         <a class="repo-chip" href="https://lawphil.net/" target="_blank">LawPhil Archive ↗</a>
         <a class="repo-chip" href="https://www.congress.gov.ph/" target="_blank">House Documents ↗</a>
@@ -243,7 +272,7 @@ def home():
     </div>
 
     <div class="main-content" id="resultsContainer">
-        <p style="text-align: center; color: #64748b;">Enter a query above to synthesize findings and earn points.</p>
+        <p style="text-align: center; color: var(--text-muted);">Enter a query above to synthesize findings and earn points.</p>
     </div>
 
     <script>
@@ -263,7 +292,7 @@ def home():
             const userId = document.getElementById('userIdInput').value || 'default_user';
             const container = document.getElementById('resultsContainer');
             
-            container.innerHTML = '<p style="text-align: center; color: #16a34a; font-weight:600;">Executing Search & Updating App Inventor Points...</p>';
+            container.innerHTML = '<p style="text-align: center; color: var(--brand); font-weight:600;">Executing Search & Updating App Inventor Points...</p>';
             try {
                 const response = await fetch('/api/search', {
                     method: 'POST',
@@ -276,13 +305,13 @@ def home():
                 
                 let html = `
                     <div class="ai-synthesis-box">
-                        <div style="font-size:0.85rem; font-weight:700; color:#16a34a; text-transform:uppercase; margin-bottom:8px;">✨ AnInag AI Synthesis Summary</div>
-                        <div style="font-size:0.95rem; color:#166534; line-height:1.6;">${data.ai_synthesis}</div>
+                        <div class="ai-synthesis-title">✨ AnInag AI Synthesis Summary</div>
+                        <div class="ai-synthesis-text">${data.ai_synthesis}</div>
                     </div>
                     <div class="consensus-meter">
-                        <div style="font-size:0.85rem; font-weight:700; color:#64748b; text-transform:uppercase;">Coverage & Point Status</div>
-                        <div style="font-size:1.1rem; font-weight:700; margin:4px 0;">Awarded +1 Point to '${data.user_id}'</div>
-                        <div style="font-size:0.9rem; color:#64748b;">Total Account Balance: ${data.total_points} Points</div>
+                        <div style="font-size:0.85rem; font-weight:700; color:var(--text-muted); text-transform:uppercase;">Coverage & Point Status</div>
+                        <div style="font-size:1.1rem; font-weight:700; margin:4px 0; color:var(--primary);">Awarded +1 Point to '${data.user_id}'</div>
+                        <div style="font-size:0.9rem; color:var(--text-muted);">Total Account Balance: ${data.total_points} Points</div>
                     </div>
                 `;
                 data.results.forEach(res => {
@@ -290,12 +319,12 @@ def home():
                         <div class="result-card">
                             <div style="display:flex; gap:12px; margin-bottom:10px;">
                                 <span class="card-badge">${res.badge}</span>
-                                <span style="font-size:0.8rem; color:#64748b;">${res.authors} • ${res.year}</span>
+                                <span style="font-size:0.8rem; color:var(--text-muted);">${res.authors} • ${res.year}</span>
                             </div>
-                            <h2 style="font-size:1.15rem; font-weight:600; margin-bottom:10px;">${res.title}</h2>
+                            <h2 style="font-size:1.15rem; font-weight:600; margin-bottom:10px; color:var(--primary);">${res.title}</h2>
                             <div class="takeaway-box">
-                                <div style="font-size:0.75rem; font-weight:700; color:#64748b; text-transform:uppercase;">Document Gist & Summary</div>
-                                <div style="font-size:0.95rem; margin-top:4px; line-height:1.5;">${res.takeaway}</div>
+                                <div style="font-size:0.75rem; font-weight:700; color:var(--text-muted); text-transform:uppercase;">Document Gist & Summary</div>
+                                <div style="font-size:0.95rem; margin-top:4px; line-height:1.5; color:var(--primary);">${res.takeaway}</div>
                             </div>
                             <div>
                                 <a href="${res.citation_url}" target="_blank" class="source-link">🔗 Open Target Document Match (${res.journal}) ↗</a>
@@ -309,7 +338,6 @@ def home():
             }
         }
 
-        // Initialize user points display on load
         fetchUserPoints();
     </script>
 </body>
