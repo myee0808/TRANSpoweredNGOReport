@@ -5,12 +5,29 @@ from pydantic import BaseModel
 import urllib.request
 import urllib.parse
 import json
+import os
 import re
 
 app = FastAPI(title="AnInag NGO Transparency & Research Backend")
 
-# In-memory storage for App Inventor TinyWebDB
-database: Dict[str, str] = {}
+DB_FILE = "database.json"
+
+# --- PERSISTENT DISK STORAGE (JSON FILE) ---
+def load_database() -> Dict[str, str]:
+    if os.path.exists(DB_FILE):
+        try:
+            with open(DB_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def save_database(data: Dict[str, str]):
+    with open(DB_FILE, "w") as f:
+        json.dump(data, f)
+
+# Initialize storage
+database: Dict[str, str] = load_database()
 
 # --- OFFICIAL GOVERNMENT & NGO TARGET REPOSITORIES ---
 GOVERNMENT_NGO_REPOSITORIES = [
@@ -66,7 +83,7 @@ GOVERNMENT_NGO_REPOSITORIES = [
 
 class SearchQuery(BaseModel):
     query: str
-    user_id: Optional[str] = "default_user"
+    user_id: Optional[str] = "user_001"
     sources: Optional[List[str]] = None
 
 def fetch_ecosia_ngo_results(query: str) -> List[Dict]:
@@ -101,13 +118,15 @@ def fetch_ecosia_ngo_results(query: str) -> List[Dict]:
 @app.post("/api/search")
 def search_ngo_data(payload: SearchQuery):
     user_query = payload.query.strip().lower()
-    user_id = payload.user_id.strip() if payload.user_id else "default_user"
+    user_id = payload.user_id.strip() if payload.user_id else "user_001"
     encoded_user_query = urllib.parse.quote(user_query)
     
+    # Save persistent points to database file
     point_tag = f"points_{user_id}"
     current_points = int(database.get(point_tag, "0"))
     new_points = current_points + 1
     database[point_tag] = str(new_points)
+    save_database(database)
 
     results = []
     for idx, repo in enumerate(GOVERNMENT_NGO_REPOSITORIES):
@@ -171,7 +190,7 @@ def get_user_points(user_id: str):
     points = database.get(f"points_{user_id}", "0")
     return {"user_id": user_id, "points": int(points)}
 
-# --- 2. ANINAG WEB FRONTEND WITH EARTHY COLOR PALETTE ---
+# --- 2. WEB FRONTEND ---
 @app.get("/", response_class=HTMLResponse)
 def home():
     return """<!DOCTYPE html>
@@ -277,7 +296,7 @@ def home():
 
     <script>
         async function fetchUserPoints() {
-            const userId = document.getElementById('userIdInput').value || 'default_user';
+            const userId = document.getElementById('userIdInput').value || 'user_001';
             try {
                 const res = await fetch(`/api/points/${userId}`);
                 const data = await res.json();
@@ -289,7 +308,7 @@ def home():
 
         async function executeSearch() {
             const query = document.getElementById('searchInput').value;
-            const userId = document.getElementById('userIdInput').value || 'default_user';
+            const userId = document.getElementById('userIdInput').value || 'user_001';
             const container = document.getElementById('resultsContainer');
             
             container.innerHTML = '<p style="text-align: center; color: var(--brand); font-weight:600;">Executing Search & Updating App Inventor Points...</p>';
@@ -343,10 +362,11 @@ def home():
 </body>
 </html>"""
 
-# --- 3. BACKEND API FOR MIT APP INVENTOR (TINYWEBDB PROTOCOL) ---
+# --- 3. TINYWEBDB ENDPOINTS ---
 @app.post("/storeval")
 def store_val(tag: str = Form(...), value: str = Form(...)):
     database[tag] = value
+    save_database(database)
     return ["stored", tag, value]
 
 @app.post("/getvalue")
