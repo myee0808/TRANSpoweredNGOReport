@@ -26,7 +26,6 @@ def save_database(data: Dict[str, str]):
     with open(DB_FILE, "w") as f:
         json.dump(data, f)
 
-# Initialize storage
 database: Dict[str, str] = load_database()
 
 # --- OFFICIAL GOVERNMENT & NGO TARGET REPOSITORIES ---
@@ -114,19 +113,20 @@ def fetch_ecosia_ngo_results(query: str) -> List[Dict]:
 
     return extracted_results
 
-# --- 1. ANINAG SEARCH & POINT REWARD ROUTE ---
+# --- 1. SEARCH & POINT REWARD ROUTE ---
 @app.post("/api/search")
 def search_ngo_data(payload: SearchQuery):
     user_query = payload.query.strip().lower()
     user_id = payload.user_id.strip() if payload.user_id else "user_001"
     encoded_user_query = urllib.parse.quote(user_query)
     
-    # Save persistent points to database file
     point_tag = f"points_{user_id}"
     current_points = int(database.get(point_tag, "0"))
     new_points = current_points + 1
     database[point_tag] = str(new_points)
     save_database(database)
+
+    trees_planted = new_points // 6  # 6 points = 1 tree calculation
 
     results = []
     for idx, repo in enumerate(GOVERNMENT_NGO_REPOSITORIES):
@@ -176,21 +176,23 @@ def search_ngo_data(payload: SearchQuery):
         "user_id": user_id,
         "points_earned": 1,
         "total_points": new_points,
+        "trees_planted": trees_planted,
         "ai_synthesis": ai_synthesis_text,
         "consensus_summary": {
             "affirmative_percentage": 95,
             "verdict": f"Evaluated Across All {len(GOVERNMENT_NGO_REPOSITORIES)} Target Repositories",
-            "overview": f"1 point awarded to '{user_id}'. Total Points: {new_points}."
+            "overview": f"1 point awarded to '{user_id}'. Total Points: {new_points} | Trees Planted: {trees_planted}."
         },
         "results": results
     }
 
 @app.get("/api/points/{user_id}")
 def get_user_points(user_id: str):
-    points = database.get(f"points_{user_id}", "0")
-    return {"user_id": user_id, "points": int(points)}
+    points = int(database.get(f"points_{user_id}", "0"))
+    trees = points // 6
+    return {"user_id": user_id, "points": points, "trees": trees}
 
-# --- 2. WEB FRONTEND ---
+# --- 2. WEB FRONTEND WITH EARTHY COLOR PALETTE ---
 @app.get("/", response_class=HTMLResponse)
 def home():
     return """<!DOCTYPE html>
@@ -260,14 +262,14 @@ def home():
     <header>
         <div class="logo">AnInag <span>Civic Points System</span></div>
         <div style="display:flex; align-items:center; gap:16px;">
-            <div class="user-points-badge" id="headerPointsBadge">⭐ Points: 0</div>
+            <div class="user-points-badge" id="headerPointsBadge">⭐ Points: 0 | 🌳 Trees: 0</div>
             <a href="/docs" style="color:var(--text-muted); text-decoration:none; font-weight:500;">API Docs</a>
         </div>
     </header>
 
     <div class="hero-section">
         <h1 style="font-size: 2.25rem; margin-bottom: 12px;">AnInag Research & Reward Portal</h1>
-        <p style="margin-bottom: 20px;">Earn points recorded on your MIT App for every transparency search conducted.</p>
+        <p style="margin-bottom: 20px;">Every 6 searches plant 1 tree! Points are recorded live on your MIT App.</p>
         
         <div class="user-id-bar">
             <label for="userIdInput">App User ID / Tag:</label>
@@ -300,7 +302,7 @@ def home():
             try {
                 const res = await fetch(`/api/points/${userId}`);
                 const data = await res.json();
-                document.getElementById('headerPointsBadge').innerText = `⭐ Points: ${data.points}`;
+                document.getElementById('headerPointsBadge').innerText = `⭐ Points: ${data.points} | 🌳 Trees: ${data.trees}`;
             } catch (e) {
                 console.error(e);
             }
@@ -320,7 +322,7 @@ def home():
                 });
                 const data = await response.json();
                 
-                document.getElementById('headerPointsBadge').innerText = `⭐ Points: ${data.total_points}`;
+                document.getElementById('headerPointsBadge').innerText = `⭐ Points: ${data.total_points} | 🌳 Trees: ${data.trees_planted}`;
                 
                 let html = `
                     <div class="ai-synthesis-box">
@@ -330,7 +332,7 @@ def home():
                     <div class="consensus-meter">
                         <div style="font-size:0.85rem; font-weight:700; color:var(--text-muted); text-transform:uppercase;">Coverage & Point Status</div>
                         <div style="font-size:1.1rem; font-weight:700; margin:4px 0; color:var(--primary);">Awarded +1 Point to '${data.user_id}'</div>
-                        <div style="font-size:0.9rem; color:var(--text-muted);">Total Account Balance: ${data.total_points} Points</div>
+                        <div style="font-size:0.9rem; color:var(--text-muted);">Total Points: ${data.total_points} | 🌳 Total Trees Planted: ${data.trees_planted}</div>
                     </div>
                 `;
                 data.results.forEach(res => {
@@ -362,7 +364,7 @@ def home():
 </body>
 </html>"""
 
-# --- 3. TINYWEBDB ENDPOINTS ---
+# --- 3. TINYWEBDB API ENDPOINTS FOR MIT APP INVENTOR ---
 @app.post("/storeval")
 def store_val(tag: str = Form(...), value: str = Form(...)):
     database[tag] = value
