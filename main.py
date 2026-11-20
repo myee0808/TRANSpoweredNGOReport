@@ -135,46 +135,27 @@ def fetch_web_documents(query: str) -> List[Dict]:
     return extracted_results
 
 
+def extract_json_object(text: str) -> dict:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned, flags=re.S).strip()
+    try:
+        return json.loads(cleaned)
+    except Exception:
+        match = re.search(r"\{.*\}", cleaned, flags=re.S)
+        if match:
+            return json.loads(match.group(0))
+        raise
+
+
 def generate_gemini_analysis(prompt: str, sources_context: str) -> dict:
-    """Calls Gemini 2.5 Flash to summarize each source/document and generate 4 tailored solutions."""
+    """Calls Gemini 3.8 Flash via the Interactions API to summarize sources and generate 4 solutions."""
     if not ai_client:
         return {
             "ai_synthesis": "GEMINI_API_KEY is missing on Render. Add GEMINI_API_KEY under Render -> Environment to activate live AI summaries and 4 solutions.",
             "source_summaries": {},
             "solutions": []
         }
-
-    schema = {
-        "type": "OBJECT",
-        "properties": {
-            "overall_summary": {"type": "STRING"},
-            "source_summaries": {
-                "type": "ARRAY",
-                "items": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "source_name": {"type": "STRING"},
-                        "summary": {"type": "STRING"}
-                    },
-                    "required": ["source_name", "summary"]
-                }
-            },
-            "solutions": {
-                "type": "ARRAY",
-                "items": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "number": {"type": "STRING"},
-                        "title": {"type": "STRING"},
-                        "focus": {"type": "STRING"},
-                        "description": {"type": "STRING"}
-                    },
-                    "required": ["number", "title", "focus", "description"]
-                }
-            }
-        },
-        "required": ["overall_summary", "source_summaries", "solutions"]
-    }
 
     ai_prompt = f"""
 You are AnInag, a civic research and document summarization assistant.
@@ -183,25 +164,59 @@ User Prompt: "{prompt}"
 Retrieved Sources & Document Excerpts:
 {sources_context}
 
-Instructions:
-1. "overall_summary": Summarize the retrieved document excerpts and repository context directly in relation to the User Prompt. Do not invent facts outside the provided text.
-2. "source_summaries": For EVERY source block listed above (matching the exact "source_name" inside brackets), write a clear, prompt-aligned summary explaining how that document or repository informs the User Prompt.
-3. "solutions": Generate 4 distinct, concrete, actionable solutions (numbered "Solution 1", "Solution 2", "Solution 3", "Solution 4") specifically tailored to solve or address the exact User Prompt.
+Return ONLY valid JSON (no markdown fences) matching this exact structure:
+{{
+  "overall_summary": "Concise summary of the retrieved document excerpts and repository context aligned to the User Prompt, grounded only in provided text.",
+  "source_summaries": [
+    {{
+      "source_name": "Exact bracketed source_name from above",
+      "summary": "Prompt-aligned summary of this source/document."
+    }}
+  ],
+  "solutions": [
+    {{
+      "number": "Solution 1",
+      "title": "Short title",
+      "focus": "Focus area",
+      "description": "Concrete solution tailored to the User Prompt."
+    }},
+    {{
+      "number": "Solution 2",
+      "title": "Short title",
+      "focus": "Focus area",
+      "description": "Concrete solution tailored to the User Prompt."
+    }},
+    {{
+      "number": "Solution 3",
+      "title": "Short title",
+      "focus": "Focus area",
+      "description": "Concrete solution tailored to the User Prompt."
+    }},
+    {{
+      "number": "Solution 4",
+      "title": "Short title",
+      "focus": "Focus area",
+      "description": "Concrete solution tailored to the User Prompt."
+    }}
+  ]
+}}
 """
 
     try:
-        response = ai_client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=ai_prompt,
-            config={
-                "response_mime_type": "application/json",
-                "response_schema": schema,
+        interaction = ai_client.interactions.create(
+            model="gemini-3.8-flash",
+            input=ai_prompt,
+            generation_config={
+                "thinking_level": "medium"
             },
         )
-        data = json.loads(response.text)
+        raw_output = getattr(interaction, "output_text", "") or ""
+        data = extract_json_object(raw_output)
+
         summary_map = {
-            item["source_name"]: item["summary"]
+            item.get("source_name", ""): item.get("summary", "")
             for item in data.get("source_summaries", [])
+            if item.get("source_name")
         }
         return {
             "ai_synthesis": data.get("overall_summary", ""),
@@ -306,7 +321,7 @@ def home():
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AnInag AI Chat - Document Summaries & 4 Solutions</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="[https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap](https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap)" rel="stylesheet">
     <style>
         :root {
             --primary: #5B3A29;
@@ -437,12 +452,12 @@ def home():
             <h1>AnInag AI Document Summarizer & Solution Generator</h1>
             <p>Enter any prompt to summarize matching public documents and repositories, generate <strong>4 tailored solutions</strong>, and earn <strong>+1 point</strong> per prompt (<strong>6 points = 1 tree</strong>) synced with your MIT App Inventor app.</p>
             <div class="repo-chips">
-                <a class="repo-chip" href="https://www.officialgazette.gov.ph/" target="_blank">Official Gazette ↗</a>
-                <a class="repo-chip" href="https://lawphil.net/" target="_blank">LawPhil Archive ↗</a>
-                <a class="repo-chip" href="https://www.congress.gov.ph/" target="_blank">House Documents ↗</a>
-                <a class="repo-chip" href="https://ldr.senate.gov.ph/" target="_blank">Senate Archive ↗</a>
-                <a class="repo-chip" href="https://ppp.gov.ph/" target="_blank">PPP Database ↗</a>
-                <a class="repo-chip" href="https://www.coa.gov.ph/" target="_blank">COA Audit ↗</a>
+                <a class="repo-chip" href="[https://www.officialgazette.gov.ph/](https://www.officialgazette.gov.ph/)" target="_blank">Official Gazette ↗</a>
+                <a class="repo-chip" href="[https://lawphil.net/](https://lawphil.net/)" target="_blank">LawPhil Archive ↗</a>
+                <a class="repo-chip" href="[https://www.congress.gov.ph/](https://www.congress.gov.ph/)" target="_blank">House Documents ↗</a>
+                <a class="repo-chip" href="[https://ldr.senate.gov.ph/](https://ldr.senate.gov.ph/)" target="_blank">Senate Archive ↗</a>
+                <a class="repo-chip" href="[https://ppp.gov.ph/](https://ppp.gov.ph/)" target="_blank">PPP Database ↗</a>
+                <a class="repo-chip" href="[https://www.coa.gov.ph/](https://www.coa.gov.ph/)" target="_blank">COA Audit ↗</a>
             </div>
         </section>
     </main>
