@@ -21,14 +21,16 @@ DB_FILE = "database.json"
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 ai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
 # SPEED: compile regexes once instead of on every request
 RE_WORDS = re.compile(r"[a-zA-Z0-9]+")
 RE_SCRIPT_STYLE = re.compile(r"<(script|style).*?>.*?</\1>", re.S | re.I)
 RE_TAGS = re.compile(r"<[^<]+?>")
 RE_SPACES = re.compile(r"\s+")
-RE_RESULT = re.compile(r'<a class="result-title"[^>]*href="([^"]+)"[^>]*>(.*?)</a>')
 RE_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.S)
 RE_JSON_OBJ = re.compile(r"\{.*\}", re.S)
 
@@ -96,14 +98,6 @@ def cache_set(key: str, value):
         _cache[key] = (time.time(), value)
 
 
-def is_relevant_to_query(query: str, title: str, text: str) -> bool:
-    words = [w.lower() for w in RE_WORDS.findall(query) if len(w) > 2]
-    if not words:
-        return True
-    haystack = f"{title} {text}".lower()
-    return any(w in haystack for w in words)
-
-
 def fetch_page_excerpt(url: str, max_chars: int = 1200) -> str:
     """Fetches a short text excerpt from a page so AI can summarize it."""
     try:
@@ -118,52 +112,226 @@ def fetch_page_excerpt(url: str, max_chars: int = 1200) -> str:
         return ""
 
 
-def fetch_web_documents(query: str) -> List[Dict]:
-    """Fetches web results and keeps only sources that match the user's prompt."""
-    encoded_query = urllib.parse.quote(f"{query} (site:gov.ph OR site:org OR site:lawphil.net)")
-    url = f"https://html.ecosia.org/search?q={encoded_query}"
-    req = urllib.request.Request(url, headers=HEADERS)
+# --- LOOSER SEARCH: find articles/documents RELATED to the prompt ---
+SEARCH_URLS = [
+    "https://html.duckduckgo.com/html/?q={q}",   # main search
+    "https://lite.duckduckgo.com/lite/?q={q}",   # backup if the main one fails
+]
+RE_DDG_LINK = re.compile(r'<a[^>]+class=["\'](?:result__a|result-link)["\'][^>]*>.*?</a>', re.S)
+RE_HREF = re.compile(r'href=["\']([^"\']+)["\']')
+RE_DDG_SNIPPET = re.compile(r'class=["\'](?:result__snippet|result-snippet)["\'][^>]*>(.*?)</(?:a|td)>', re.S)
+TRUSTED_ENDINGS = (".gov.ph", ".gov", ".edu.ph", ".edu", ".org", ".org.ph", "lawphil.net", ".int")
+STOP_WORDS = {
+    "the", "and", "for", "are", "how", "what", "why", "can", "you", "with", "this", "that",
+    "from", "about", "into", "our", "your", "their", "does", "who", "which", "when", "where",
+    "will", "would", "should", "could", "give", "make", "tell", "please", "ways", "way",
+}
+MAX_SOURCES = 5
 
-    candidates = []
-    try:
-        with urllib.request.urlopen(req, timeout=3) as response:
-            html = response.read().decode("utf-8", errors="ignore")
-        for href, title in RE_RESULT.findall(html)[:5]:
-            clean_title = RE_TAGS.sub("", title).strip()
-            if clean_title and href.startswith("http"):
-                candidates.append((href, clean_title))
-    except Exception:
-        return []
 
-    if not candidates:
-        return []
+def clean_html_text(text: str) -> str:
+    import html as html_lib
+    return RE_SPACES.sub(" ", html_lib.unescape(RE_TAGS.sub(" ", text))).strip()
 
-    # SPEED: open all 5 pages AT THE SAME TIME instead of one after another
-    # (before: up to 5 x 2.5s = 12.5s, now: about 2.5s max)
-    excerpts: Dict[str, str] = {}
-    futures = {FETCH_POOL.submit(fetch_page_excerpt, href, 1200): href for href, _ in candidates}
-    try:
-        for fut in as_completed(futures, timeout=3):
-            excerpts[futures[fut]] = fut.result()
-    except Exception:
-        pass  # slow pages are skipped
 
-    extracted_results = []
-    quoted_query = urllib.parse.quote(query)
-    for href, clean_title in candidates:  # keep the original search order
-        excerpt = excerpts.get(href, "")
-        if not is_relevant_to_query(query, clean_title, excerpt):
+def get_domain(url: str) -> str:
+    domain = urllib.parse.urlparse(url).netloc.lower()
+    return domain[4:] if domain.startswith("www.") else domain
+
+
+def is_trusted(url: str) -> bool:
+    return get_domain(url).endswith(TRUSTED_ENDINGS)
+
+
+def prompt_keywords(query: str) -> List[str]:
+    return [w.lower() for w in RE_WORDS.findall(query) if len(w) > 2 and w.lower() not in STOP_WORDS]
+
+
+def relevance_score(query: str, title: str, text: str) -> int:
+    """LOOSE matching: counts how many prompt words appear (also matches 'flood' with 'flooding')."""
+    words = prompt_keywords(query)
+    if not words:
+        return 1
+    haystack = f"{title} {text}".lower()
+    return sum(1 for w in words if w in haystack or (len(w) > 5 and w[:5] in haystack))
+
+
+def search_web(query: str, limit: int = 8) -> List[Dict]:
+    """Returns [{url, title, snippet}] from DuckDuckGo (no API key needed)."""
+    for template in SEARCH_URLS:
+        url = template.format(q=urllib.parse.quote(query))
+        try:
+            req = urllib.request.Request(url, headers=HEADERS)
+            with urllib.request.urlopen(req, timeout=4) as response:
+                page = response.read().decode("utf-8", errors="ignore")
+        except Exception:
             continue
-        extracted_results.append({
-            "title": clean_title,
-            "url": f"{href}#:~:text={quoted_query}",
-            "raw_url": href,
-            "excerpt": excerpt
-        })
-        if len(extracted_results) >= 3:
-            break
 
-    return extracted_results
+        links = RE_DDG_LINK.findall(page)
+        snippets = [clean_html_text(s) for s in RE_DDG_SNIPPET.findall(page)]
+        found = []
+        for i, link_html in enumerate(links):
+            href_match = RE_HREF.search(link_html)
+            if not href_match:
+                continue
+            href = href_match.group(1).replace("&amp;", "&")
+            uddg = urllib.parse.parse_qs(urllib.parse.urlparse(href).query).get("uddg")
+            real_url = uddg[0] if uddg else href
+            if not real_url.startswith("http") or "duckduckgo.com" in real_url:
+                continue  # skip ads / internal links
+            found.append({
+                "url": real_url,
+                "title": clean_html_text(link_html),
+                "snippet": snippets[i] if i < len(snippets) else "",
+            })
+            if len(found) >= limit:
+                break
+        if found:
+            return found
+    return []
+
+
+# --- BACKUP SOURCES (free, no API key, don't block you like web search does) ---
+API_HEADERS = {"User-Agent": "AnInag/1.0 (civic research chatbot)"}
+_web_search_paused_until = 0.0  # web search said "too many searches" -> rest it for a bit
+
+
+def get_json(url: str, timeout: float = 4):
+    req = urllib.request.Request(url, headers=API_HEADERS)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8", errors="ignore"))
+
+
+def search_research_papers(query: str, limit: int = 3) -> List[Dict]:
+    """Research papers/documents with abstracts from OpenAlex."""
+    url = (
+        "https://api.openalex.org/works?search=" + urllib.parse.quote(query)
+        + f"&per_page={limit}&filter=has_abstract:true"
+        + "&select=title,doi,id,publication_year,abstract_inverted_index,primary_location"
+    )
+    try:
+        data = get_json(url)
+    except Exception:
+        return []
+    papers = []
+    for work in data.get("results", []):
+        inverted = work.get("abstract_inverted_index") or {}
+        positions = sorted((p, word) for word, plist in inverted.items() for p in plist)
+        abstract = " ".join(word for _, word in positions)
+        link = work.get("doi") or (work.get("primary_location") or {}).get("landing_page_url") or work.get("id")
+        if not link or not work.get("title") or len(abstract) < 80:
+            continue
+        papers.append({
+            "url": link,
+            "title": clean_html_text(work["title"]),
+            "snippet": abstract[:300],
+            "excerpt": abstract[:2000],
+            "kind": "research",
+            "year": work.get("publication_year") or 2026,
+            "source_name": ((work.get("primary_location") or {}).get("source") or {}).get("display_name"),
+        })
+    return papers
+
+
+def search_wikipedia(query: str, limit: int = 3) -> List[Dict]:
+    """Last-resort backup so the user always gets something related."""
+    url = (
+        "https://en.wikipedia.org/w/api.php?action=query&list=search&format=json"
+        f"&srlimit={limit}&srsearch=" + urllib.parse.quote(query)
+    )
+    try:
+        data = get_json(url)
+    except Exception:
+        return []
+    pages = []
+    for item in data.get("query", {}).get("search", []):
+        title = item.get("title", "")
+        pages.append({
+            "url": "https://en.wikipedia.org/wiki/" + urllib.parse.quote(title.replace(" ", "_")),
+            "title": title,
+            "snippet": clean_html_text(item.get("snippet", "")),
+            "kind": "encyclopedia",
+        })
+    return pages
+
+
+def fetch_web_documents(query: str) -> List[Dict]:
+    """Finds articles/documents RELATED to the prompt (not strict) and reads a bit of each."""
+    global _web_search_paused_until
+
+    # Search the web AND research papers at the same time
+    use_web = time.time() >= _web_search_paused_until
+    web_future = FETCH_POOL.submit(search_web, query, 8) if use_web else None
+    papers_future = FETCH_POOL.submit(search_research_papers, query, 3)
+
+    web_items: List[Dict] = []
+    if web_future:
+        try:
+            web_items = web_future.result(timeout=6)
+        except Exception:
+            web_items = []
+        if not web_items:
+            _web_search_paused_until = time.time() + 60  # probably "too many searches"
+    try:
+        papers = papers_future.result(timeout=6)
+    except Exception:
+        papers = []
+
+    for item in web_items:
+        item["kind"] = "web"
+
+    # Read the web pages AT THE SAME TIME (research papers already come with their abstract)
+    if web_items:
+        futures = {FETCH_POOL.submit(fetch_page_excerpt, w["url"], 2000): w for w in web_items}
+        try:
+            for fut in as_completed(futures, timeout=3.5):
+                futures[fut]["page_text"] = fut.result()
+        except Exception:
+            pass  # slow pages just use the search snippet
+
+    # Too few results? Add Wikipedia so the user still gets related reading
+    encyclopedia = search_wikipedia(query, 3) if len(web_items) + len(papers) < 3 else []
+
+    def ranked(items: List[Dict]) -> List[Dict]:
+        scored = []
+        for order, it in enumerate(items):
+            excerpt = it.get("excerpt") or f"{it.get('snippet', '')} {it.get('page_text', '')}".strip()
+            it["excerpt"] = excerpt[:2000]
+            score = relevance_score(query, it["title"], excerpt)
+            if is_trusted(it["url"]) or it["kind"] == "research":
+                score += 1  # small bonus for .gov / .edu / .org / research
+            scored.append((score, order, it))
+        # Best matches first, but NEVER drop everything: the search already judged these related
+        scored.sort(key=lambda s: (-s[0], s[1]))
+        return [it for _, _, it in scored]
+
+    web_ranked, papers_ranked = ranked(web_items), ranked(papers)
+    # Wikipedia is only a filler, so skip pages that share no words with the prompt
+    wiki_ranked = [w for w in ranked(encyclopedia) if relevance_score(query, w["title"], w["excerpt"]) > 0]
+
+    # Mix: up to 3 articles + up to 2 research papers, then fill up to 5 with whatever is left
+    chosen = web_ranked[:3] + papers_ranked[:2]
+    leftovers = web_ranked[3:] + papers_ranked[2:] + wiki_ranked
+    chosen += leftovers[: max(0, MAX_SOURCES - len(chosen))]
+
+    seen, results = set(), []
+    for it in chosen:
+        key = it["url"].split("#")[0].rstrip("/")
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append({
+            "title": it["title"] or get_domain(it["url"]),
+            "url": it["url"],
+            "raw_url": it["url"],
+            "domain": it.get("source_name") or get_domain(it["url"]),
+            "kind": it["kind"],
+            "year": it.get("year", 2026),
+            "trusted": is_trusted(it["url"]) or it["kind"] == "research",
+            "snippet": it.get("snippet", ""),
+            "excerpt": it["excerpt"],
+        })
+    return results
 
 
 def extract_json_object(text: str) -> dict:
@@ -191,23 +359,28 @@ def generate_gemini_analysis(prompt: str, sources_context: str) -> dict:
     context_section = (
         sources_context
         if sources_context.strip()
-        else "No direct matching external document excerpts were retrieved for this prompt."
+        else "No related articles were retrieved for this prompt. Answer from general knowledge."
     )
 
     ai_prompt = f"""
 You are AnInag, a civic research and problem-solving assistant. Write all output in clear, natural English.
 User Prompt: "{prompt}"
 
-Matched Sources & Excerpts:
+Related Articles / Documents (each starts with [Source N]):
 {context_section}
+
+Rules:
+- Write ONE summary for EVERY source listed above, using its exact number as "source_id".
+- Each source summary is 2-3 sentences: what the article/document says, then how it relates to the User Prompt.
+- Only use what the excerpt says. If the excerpt is short, summarize what is there and do not invent facts.
 
 Return ONLY valid JSON (no ```json code fences) with this exact structure:
 {{
   "overall_summary": "Clear, concise summary aligned to the User Prompt based on the provided information.",
   "source_summaries": [
     {{
-      "source_name": "Exact source_name inside brackets above (if any)",
-      "summary": "Concise prompt-aligned summary of this source."
+      "source_id": 1,
+      "summary": "2-3 sentence summary of this article and how it relates to the User Prompt."
     }}
   ],
   "solutions": [
@@ -250,11 +423,14 @@ Return ONLY valid JSON (no ```json code fences) with this exact structure:
         raw_output = getattr(interaction, "output_text", "") or ""
         data = extract_json_object(raw_output)
 
-        summary_map = {
-            item.get("source_name", ""): item.get("summary", "")
-            for item in data.get("source_summaries", [])
-            if item.get("source_name")
-        }
+        summary_map = {}
+        for item in data.get("source_summaries", []):
+            try:
+                source_id = int(str(item.get("source_id", "")).strip())
+            except ValueError:
+                continue
+            if item.get("summary"):
+                summary_map[source_id] = item["summary"]
         return {
             "ai_synthesis": data.get("overall_summary", ""),
             "source_summaries": summary_map,
@@ -303,29 +479,34 @@ def search_ngo_data(payload: SearchQuery):
         context_chunks = []
         results = []
 
-        for idx, doc in enumerate(web_docs):
-            source_label = f"{doc['title']} (Matched Source)"
-            excerpt_text = doc["excerpt"] if doc["excerpt"] else f"Matched result for '{raw_prompt}'."
-            context_chunks.append(f"[{source_label}]\nURL: {doc['raw_url']}\nExcerpt: {excerpt_text}")
+        for idx, doc in enumerate(web_docs, start=1):
+            excerpt_text = doc["excerpt"] or doc["snippet"] or doc["title"]
+            context_chunks.append(
+                f"[Source {idx}] {doc['title']}\nWebsite: {doc['domain']}\nExcerpt: {excerpt_text}"
+            )
 
             results.append({
-                "id": idx + 1,
+                "id": idx,
                 "title": doc["title"],
-                "source_key": source_label,
-                "authors": "Matched Source",
-                "year": 2026,
-                "journal": "Verified Result",
-                "takeaway": excerpt_text[:280],
+                "authors": doc["domain"],
+                "year": doc["year"],
+                "journal": doc["domain"],
+                # shown until the AI summary replaces it
+                "takeaway": (doc["snippet"] or excerpt_text)[:280],
+                "ai_summarized": False,
                 "citation_url": doc["url"],
-                "badge": "Relevant Match"
+                "badge": {"research": "Research Paper", "encyclopedia": "Encyclopedia"}.get(
+                    doc["kind"], "Trusted Source" if doc["trusted"] else "Related Article"
+                )
             })
 
         ai_output = generate_gemini_analysis(raw_prompt, "\n\n".join(context_chunks))
         ai_source_summaries = ai_output.get("source_summaries", {})
 
         for r in results:
-            if ai_source_summaries.get(r["source_key"]):
-                r["takeaway"] = ai_source_summaries[r["source_key"]]
+            if ai_source_summaries.get(r["id"]):
+                r["takeaway"] = ai_source_summaries[r["id"]]
+                r["ai_summarized"] = True
 
         cached = {
             "ai_synthesis": ai_output.get("ai_synthesis", ""),
@@ -361,7 +542,7 @@ def home():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AnInag AI Chat - 4 Solutions & Matched Sources</title>
+    <title>AnInag AI Chat - 4 Solutions & Related Articles</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -543,7 +724,7 @@ def home():
 
             const loadingCard = document.createElement('div');
             loadingCard.className = 'bot-card';
-            loadingCard.innerHTML = `<div style="color:var(--brand); font-weight:600;">Generating summary, 4 solutions, and checking relevant sources...</div>`;
+            loadingCard.innerHTML = `<div style="color:var(--brand); font-weight:600;">Finding related articles and writing AI summaries...</div>`;
             thread.appendChild(loadingCard);
             loadingCard.scrollIntoView({ behavior: 'smooth', block: 'end' });
 
@@ -575,17 +756,17 @@ def home():
                             </div>
                             <h3 style="font-size:1.05rem; font-weight:600; color:var(--primary);">${escapeHtml(res.title)}</h3>
                             <div class="takeaway-box">
-                                <div style="font-size:0.74rem; font-weight:700; color:var(--text-muted); text-transform:uppercase;">AI Summary</div>
+                                <div style="font-size:0.74rem; font-weight:700; color:var(--text-muted); text-transform:uppercase;">${res.ai_summarized ? 'AI Summary' : 'Preview'}</div>
                                 <div style="font-size:0.92rem; margin-top:4px; line-height:1.5; color:var(--primary);">${escapeHtml(res.takeaway)}</div>
                             </div>
-                            <a href="${escapeHtml(res.citation_url)}" target="_blank" class="source-link">🔗 Open Matched Source (${escapeHtml(res.journal)}) ↗</a>
+                            <a href="${escapeHtml(res.citation_url)}" target="_blank" class="source-link">🔗 Read the full article (${escapeHtml(res.journal)}) ↗</a>
                         </div>
                     `).join('')
-                    : `<div class="empty-sources-box">No direct matching source links were found for this prompt, so no empty source links were displayed.</div>`;
+                    : `<div class="empty-sources-box">No related articles could be found right now. Try adding more detail to your prompt.</div>`;
 
                 loadingCard.innerHTML = `
                     <div class="bot-header">
-                        <div class="bot-title">AI Summary, 4 Solutions & Matched Sources</div>
+                        <div class="bot-title">AI Summary, 4 Solutions & Related Articles</div>
                         <div class="reward-pill">+1 Pt → Total: ${data.total_points} | 🌳 Trees: ${data.trees_planted}</div>
                     </div>
                     <div>
@@ -597,7 +778,7 @@ def home():
                         <div class="solutions-grid">${solutionsHtml || '<div style="font-size:0.9rem; color:var(--text-muted);">No solutions returned. Check GEMINI_API_KEY in Render.</div>'}</div>
                     </div>
                     <div>
-                        <div class="section-heading">Relevant Sources</div>
+                        <div class="section-heading">Related Articles & Documents</div>
                         ${sourcesHtml}
                     </div>
                 `;
