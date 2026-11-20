@@ -34,52 +34,6 @@ def save_database(data: Dict[str, str]):
 
 database: Dict[str, str] = load_database()
 
-# --- TARGET GOVERNMENT & NGO REPOSITORIES ---
-GOVERNMENT_NGO_REPOSITORIES = [
-    {
-        "name": "Official Gazette of the Philippines",
-        "url": "https://www.officialgazette.gov.ph/",
-        "search_url_template": "https://www.officialgazette.gov.ph/?s={query}",
-        "category": "Republic Acts & Executive Orders",
-        "document_summary": "Publishes enacted Republic Acts, presidential issuances, administrative rules, and official state documents detailing legal mandates, budget allocations, and state expenditures."
-    },
-    {
-        "name": "LawPhil Project (Arellano Law Foundation)",
-        "url": "https://lawphil.net/statutes/repacts/repacts.html",
-        "search_url_template": "https://www.google.com/search?q=site:lawphil.net+{query}",
-        "category": "Statutory Archive & Legal Codes",
-        "document_summary": "Maintains a comprehensive full-text statutory archive of Philippine legal codes, historic acts, and judicial provisions governing state transactions."
-    },
-    {
-        "name": "House of Representatives Legislative Documents",
-        "url": "https://www.congress.gov.ph/legislative-documents",
-        "search_url_template": "https://www.congress.gov.ph/legislative-documents/?q={query}",
-        "category": "House Bills & Congressional Records",
-        "document_summary": "Archives filed House Bills, committee hearing transcripts, budgetary appropriations resolutions, and legislative tracking records."
-    },
-    {
-        "name": "Senate Legislative Document Archive",
-        "url": "https://ldr.senate.gov.ph/subject/government-documents",
-        "search_url_template": "https://ldr.senate.gov.ph/subject/government-documents?search={query}",
-        "category": "Senate Bills & Public Records",
-        "document_summary": "Provides official records of Senate Bills, committee inquiries, policy position papers, and national policy deliberations."
-    },
-    {
-        "name": "Public-Private Partnership (PPP) Center Project Database",
-        "url": "https://ppp.gov.ph/project-database/",
-        "search_url_template": "https://ppp.gov.ph/?s={query}",
-        "category": "Infrastructure & Project Registry",
-        "document_summary": "Catalogs infrastructure project pipelines, financial feasibility studies, contractual agreements, and bidding parameters for public-private ventures."
-    },
-    {
-        "name": "Commission on Audit (COA) Documentary Guidelines",
-        "url": "https://www.coa.gov.ph/FAQS/is-there-a-manual-or-list-of-documentary-requirements-for-common-government-transactions/",
-        "search_url_template": "https://www.coa.gov.ph/?s={query}",
-        "category": "Audit Compliance & Financial Records",
-        "document_summary": "Details mandatory audit checklists, voucher requirements, disbursement rules, and compliance standards for public fund utilization."
-    }
-]
-
 
 class SearchQuery(BaseModel):
     query: str
@@ -87,14 +41,22 @@ class SearchQuery(BaseModel):
     sources: Optional[List[str]] = None
 
 
-def fetch_page_excerpt(url: str, max_chars: int = 2500) -> str:
-    """Fetches actual text from a linked document/page so Gemini can summarize it."""
+def is_relevant_to_query(query: str, title: str, text: str) -> bool:
+    words = [w.lower() for w in re.findall(r"[a-zA-Z0-9]+", query) if len(w) > 2]
+    if not words:
+        return True
+    haystack = f"{title} {text}".lower()
+    return any(w in haystack for w in words)
+
+
+def fetch_page_excerpt(url: str, max_chars: int = 1200) -> str:
+    """Kumukuha ng maikling text mula sa link para i-summarize ng AI."""
     try:
         req = urllib.request.Request(
             url,
             headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
         )
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=2.5) as resp:
             raw_html = resp.read().decode("utf-8", errors="ignore")
             raw_html = re.sub(r"<(script|style).*?>.*?</\1>", " ", raw_html, flags=re.S | re.I)
             text = re.sub(r"<[^<]+?>", " ", raw_html)
@@ -105,8 +67,8 @@ def fetch_page_excerpt(url: str, max_chars: int = 2500) -> str:
 
 
 def fetch_web_documents(query: str) -> List[Dict]:
-    """Fetches relevant public web documents and extracts text snippets for Gemini summarization."""
-    encoded_query = urllib.parse.quote(f"{query} site:gov.ph OR site:org OR site:lawphil.net")
+    """Kumukuha ng mga tugmang web sources at sinasala lang ang may match sa prompt."""
+    encoded_query = urllib.parse.quote(f"{query} (site:gov.ph OR site:org OR site:lawphil.net)")
     url = f"https://html.ecosia.org/search?q={encoded_query}"
 
     req = urllib.request.Request(
@@ -116,12 +78,16 @@ def fetch_web_documents(query: str) -> List[Dict]:
 
     extracted_results = []
     try:
-        with urllib.request.urlopen(req, timeout=5) as response:
+        with urllib.request.urlopen(req, timeout=3) as response:
             html = response.read().decode("utf-8", errors="ignore")
             matches = re.findall(r'<a class="result-title"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', html)
-            for href, title in matches[:2]:
+            for href, title in matches[:5]:
                 clean_title = re.sub(r"<[^<]+?>", "", title).strip()
-                excerpt = fetch_page_excerpt(href, max_chars=2200)
+                if not clean_title or not href.startswith("http"):
+                    continue
+                excerpt = fetch_page_excerpt(href, max_chars=1200)
+                if not is_relevant_to_query(query, clean_title, excerpt):
+                    continue
                 fragment_url = f"{href}#:~:text={urllib.parse.quote(query)}"
                 extracted_results.append({
                     "title": clean_title,
@@ -129,6 +95,8 @@ def fetch_web_documents(query: str) -> List[Dict]:
                     "raw_url": href,
                     "excerpt": excerpt
                 })
+                if len(extracted_results) >= 3:
+                    break
     except Exception:
         pass
 
@@ -149,54 +117,60 @@ def extract_json_object(text: str) -> dict:
 
 
 def generate_gemini_analysis(prompt: str, sources_context: str) -> dict:
-    """Calls Gemini 3.8 Flash via the Interactions API to summarize sources and generate 4 solutions."""
+    """Gumagamit ng Gemini 3.8 Flash Interactions API para sa summary at 4 tailored solutions."""
     if not ai_client:
         return {
-            "ai_synthesis": "GEMINI_API_KEY is missing on Render. Add GEMINI_API_KEY under Render -> Environment to activate live AI summaries and 4 solutions.",
+            "ai_synthesis": "Walang GEMINI_API_KEY sa Render environment variables.",
             "source_summaries": {},
             "solutions": []
         }
 
+    context_section = (
+        sources_context
+        if sources_context.strip()
+        else "Walang nakuha o direktang tugmang external document excerpt para sa prompt na ito."
+    )
+
     ai_prompt = f"""
-You are AnInag, a civic research and document summarization assistant.
-User Prompt: "{prompt}"
+Ikaw ay si AnInag, isang civic research at problem-solving assistant.
+Prompt ng user: "{prompt}"
 
-Retrieved Sources & Document Excerpts:
-{sources_context}
+Mga nakuha at tugmang sources/excerpts:
+{context_section}
 
-Return ONLY valid JSON (no markdown fences) matching this exact structure:
+Magbalik ng VALID JSON lamang (walang ```json code fences) na may ganitong eksaktong istruktura:
 {{
-  "overall_summary": "Concise summary of the retrieved document excerpts and repository context aligned to the User Prompt, grounded only in provided text.",
+  "overall_summary": "Malinaw at direktang buod na tugma sa prompt ng user batay lamang sa ibinigay na impormasyon.",
   "source_summaries": [
     {{
-      "source_name": "Exact bracketed source_name from above",
-      "summary": "Prompt-aligned summary of this source/document."
+      "source_name": "Eksaktong source_name sa loob ng brackets sa itaas (kung mayroon)",
+      "summary": "Maikling buod ng source na ito na naka-angkop sa prompt."
     }}
   ],
   "solutions": [
     {{
       "number": "Solution 1",
-      "title": "Short title",
-      "focus": "Focus area",
-      "description": "Concrete solution tailored to the User Prompt."
+      "title": "Maikling pamagat ng solusyon",
+      "focus": "Pokus ng solusyon",
+      "description": "Kongkreto at praktikal na solusyon na direktang sumasagot sa prompt ng user."
     }},
     {{
       "number": "Solution 2",
-      "title": "Short title",
-      "focus": "Focus area",
-      "description": "Concrete solution tailored to the User Prompt."
+      "title": "Maikling pamagat ng solusyon",
+      "focus": "Pokus ng solusyon",
+      "description": "Kongkreto at praktikal na solusyon na direktang sumasagot sa prompt ng user."
     }},
     {{
       "number": "Solution 3",
-      "title": "Short title",
-      "focus": "Focus area",
-      "description": "Concrete solution tailored to the User Prompt."
+      "title": "Maikling pamagat ng solusyon",
+      "focus": "Pokus ng solusyon",
+      "description": "Kongkreto at praktikal na solusyon na direktang sumasagot sa prompt ng user."
     }},
     {{
       "number": "Solution 4",
-      "title": "Short title",
-      "focus": "Focus area",
-      "description": "Concrete solution tailored to the User Prompt."
+      "title": "Maikling pamagat ng solusyon",
+      "focus": "Pokus ng solusyon",
+      "description": "Kongkreto at praktikal na solusyon na direktang sumasagot sa prompt ng user."
     }}
   ]
 }}
@@ -207,7 +181,7 @@ Return ONLY valid JSON (no markdown fences) matching this exact structure:
             model="gemini-3.8-flash",
             input=ai_prompt,
             generation_config={
-                "thinking_level": "medium"
+                "thinking_level": "low"
             },
         )
         raw_output = getattr(interaction, "output_text", "") or ""
@@ -231,15 +205,13 @@ Return ONLY valid JSON (no markdown fences) matching this exact structure:
         }
 
 
-# --- 1. CHAT PROMPT, GEMINI SUMMARIES & POINT REWARD ENDPOINT ---
+# --- 1. CHAT PROMPT, AI SUMMARIES, 4 SOLUTIONS & POINT REWARD ---
 @app.post("/api/search")
 def search_ngo_data(payload: SearchQuery):
     raw_prompt = payload.query.strip()
-    user_query = raw_prompt.lower()
     user_id = payload.user_id.strip() if payload.user_id else "user_001"
-    encoded_user_query = urllib.parse.quote(user_query)
 
-    # +1 point per prompt, 6 points = 1 tree
+    # +1 point bawat prompt, 6 points = 1 tree
     point_tag = f"points_{user_id}"
     current_points = int(database.get(point_tag, "0"))
     new_points = current_points + 1
@@ -252,38 +224,21 @@ def search_ngo_data(payload: SearchQuery):
     context_chunks = []
     results = []
 
-    for idx, repo in enumerate(GOVERNMENT_NGO_REPOSITORIES):
-        direct_deep_link = repo["search_url_template"].format(query=encoded_user_query)
-        source_label = f"{repo['name']} ({repo['category']})"
-        context_chunks.append(f"[{source_label}]\n{repo['document_summary']}")
-
-        results.append({
-            "id": idx + 1,
-            "title": f"{repo['name']}: Records for '{raw_prompt}'",
-            "source_key": source_label,
-            "authors": repo["category"],
-            "year": 2026,
-            "journal": repo["name"],
-            "takeaway": repo["document_summary"],
-            "citation_url": direct_deep_link,
-            "badge": "Official Target Repository"
-        })
-
     for idx, doc in enumerate(web_docs):
-        source_label = f"{doc['title']} (Web Document)"
-        excerpt_text = doc["excerpt"] if doc["excerpt"] else "No full text excerpt retrieved; title and URL matched."
+        source_label = f"{doc['title']} (Matched Source)"
+        excerpt_text = doc["excerpt"] if doc["excerpt"] else f"Tugmang resulta para sa '{raw_prompt}'."
         context_chunks.append(f"[{source_label}]\nURL: {doc['raw_url']}\nExcerpt: {excerpt_text}")
 
         results.append({
-            "id": len(GOVERNMENT_NGO_REPOSITORIES) + idx + 1,
+            "id": idx + 1,
             "title": doc["title"],
             "source_key": source_label,
-            "authors": "Web Indexed Document",
+            "authors": "Matched Source",
             "year": 2026,
-            "journal": "Public Web Document",
-            "takeaway": excerpt_text[:300],
+            "journal": "Verified Result",
+            "takeaway": excerpt_text[:280],
             "citation_url": doc["url"],
-            "badge": "Live Document Source"
+            "badge": "Relevant Match"
         })
 
     ai_output = generate_gemini_analysis(raw_prompt, "\n\n".join(context_chunks))
@@ -320,8 +275,8 @@ def home():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AnInag AI Chat - Document Summaries & 4 Solutions</title>
-    <link href="[https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap](https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap)" rel="stylesheet">
+    <title>AnInag AI Chat - 4 Solutions & Matched Sources</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
             --primary: #5B3A29;
@@ -360,13 +315,7 @@ def home():
         }
         .welcome-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 16px; padding: 22px; }
         .welcome-card h1 { font-size: 1.45rem; color: var(--primary); margin-bottom: 6px; }
-        .welcome-card p { font-size: 0.92rem; color: var(--text-muted); margin-bottom: 14px; }
-        .repo-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-        .repo-chip {
-            background: var(--accent-cream); border: 1px solid var(--border); padding: 4px 10px;
-            border-radius: 20px; font-size: 0.74rem; color: var(--primary); text-decoration: none; font-weight: 600;
-        }
-        .repo-chip:hover { background: var(--brand); color: #fff; }
+        .welcome-card p { font-size: 0.92rem; color: var(--text-muted); }
         .message-row { display: flex; flex-direction: column; gap: 6px; }
         .user-bubble {
             align-self: flex-end; background: var(--brand); color: #fff; padding: 12px 18px;
@@ -415,6 +364,10 @@ def home():
             background: var(--bg); border-left: 3px solid var(--brand);
             padding: 12px 14px; margin: 10px 0; border-radius: 0 8px 8px 0;
         }
+        .empty-sources-box {
+            padding: 14px 16px; background: var(--bg); border: 1px dashed var(--border);
+            border-radius: 12px; font-size: 0.88rem; color: var(--text-muted);
+        }
         .source-link { color: var(--brand); text-decoration: none; font-weight: 600; font-size: 0.88rem; }
         .source-link:hover { text-decoration: underline; color: var(--brand-dark); }
         .composer-bar {
@@ -436,7 +389,7 @@ def home():
 </head>
 <body>
     <header>
-        <div class="logo">AnInag AI Chat <span>Gemini Summaries + 4 Solutions</span></div>
+        <div class="logo">AnInag AI Chat <span>4 Solutions</span></div>
         <div class="header-controls">
             <div class="user-id-group">
                 <label for="userIdInput">User ID:</label>
@@ -449,16 +402,8 @@ def home():
 
     <main class="chat-shell" id="chatThread">
         <section class="welcome-card">
-            <h1>AnInag AI Document Summarizer & Solution Generator</h1>
-            <p>Enter any prompt to summarize matching public documents and repositories, generate <strong>4 tailored solutions</strong>, and earn <strong>+1 point</strong> per prompt (<strong>6 points = 1 tree</strong>) synced with your MIT App Inventor app.</p>
-            <div class="repo-chips">
-                <a class="repo-chip" href="[https://www.officialgazette.gov.ph/](https://www.officialgazette.gov.ph/)" target="_blank">Official Gazette ↗</a>
-                <a class="repo-chip" href="[https://lawphil.net/](https://lawphil.net/)" target="_blank">LawPhil Archive ↗</a>
-                <a class="repo-chip" href="[https://www.congress.gov.ph/](https://www.congress.gov.ph/)" target="_blank">House Documents ↗</a>
-                <a class="repo-chip" href="[https://ldr.senate.gov.ph/](https://ldr.senate.gov.ph/)" target="_blank">Senate Archive ↗</a>
-                <a class="repo-chip" href="[https://ppp.gov.ph/](https://ppp.gov.ph/)" target="_blank">PPP Database ↗</a>
-                <a class="repo-chip" href="[https://www.coa.gov.ph/](https://www.coa.gov.ph/)" target="_blank">COA Audit ↗</a>
-            </div>
+            <h1>AnInag AI Chatbot</h1>
+            <p>Mag-type ng prompt para makakuha ng summary, <strong>4 tailored solutions</strong>, at tugmang sources lang (walang "no results" link). Every prompt gives <strong>+1 point</strong> (<strong>6 points = 1 tree</strong>) synced with MIT App Inventor.</p>
         </section>
     </main>
 
@@ -468,7 +413,7 @@ def home():
                 type="text"
                 id="searchInput"
                 class="prompt-input"
-                placeholder="Enter your prompt (e.g., public market cooling and waste management)..."
+                placeholder="Type your prompt here..."
                 onkeydown="if (event.key === 'Enter') executeSearch()"
             >
             <button class="send-btn" onclick="executeSearch()">Send (+1 Pt)</button>
@@ -512,7 +457,7 @@ def home():
 
             const loadingCard = document.createElement('div');
             loadingCard.className = 'bot-card';
-            loadingCard.innerHTML = `<div style="color:var(--brand); font-weight:600;">Summarizing documents, generating 4 tailored solutions, and syncing points...</div>`;
+            loadingCard.innerHTML = `<div style="color:var(--brand); font-weight:600;">Generating summary, 4 solutions, and checking relevant sources...</div>`;
             thread.appendChild(loadingCard);
             loadingCard.scrollIntoView({ behavior: 'smooth', block: 'end' });
 
@@ -535,28 +480,30 @@ def home():
                     </div>
                 `).join('');
 
-                const sourcesHtml = (data.results || []).map(res => `
-                    <div class="source-card">
-                        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
-                            <span class="source-badge">${escapeHtml(res.badge)}</span>
-                            <span style="font-size:0.8rem; color:var(--text-muted);">${escapeHtml(res.authors)} • ${escapeHtml(res.year)}</span>
+                const sourcesHtml = (data.results && data.results.length > 0)
+                    ? data.results.map(res => `
+                        <div class="source-card">
+                            <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
+                                <span class="source-badge">${escapeHtml(res.badge)}</span>
+                                <span style="font-size:0.8rem; color:var(--text-muted);">${escapeHtml(res.authors)} • ${escapeHtml(res.year)}</span>
+                            </div>
+                            <h3 style="font-size:1.05rem; font-weight:600; color:var(--primary);">${escapeHtml(res.title)}</h3>
+                            <div class="takeaway-box">
+                                <div style="font-size:0.74rem; font-weight:700; color:var(--text-muted); text-transform:uppercase;">AI Summary</div>
+                                <div style="font-size:0.92rem; margin-top:4px; line-height:1.5; color:var(--primary);">${escapeHtml(res.takeaway)}</div>
+                            </div>
+                            <a href="${escapeHtml(res.citation_url)}" target="_blank" class="source-link">🔗 Open Matched Source (${escapeHtml(res.journal)}) ↗</a>
                         </div>
-                        <h3 style="font-size:1.05rem; font-weight:600; color:var(--primary);">${escapeHtml(res.title)}</h3>
-                        <div class="takeaway-box">
-                            <div style="font-size:0.74rem; font-weight:700; color:var(--text-muted); text-transform:uppercase;">AI Document Summary</div>
-                            <div style="font-size:0.92rem; margin-top:4px; line-height:1.5; color:var(--primary);">${escapeHtml(res.takeaway)}</div>
-                        </div>
-                        <a href="${escapeHtml(res.citation_url)}" target="_blank" class="source-link">🔗 Open Source (${escapeHtml(res.journal)}) ↗</a>
-                    </div>
-                `).join('');
+                    `).join('')
+                    : `<div class="empty-sources-box">Walang direktang tugmang link na nakuha para sa prompt na ito, kaya walang ipinakitang walang-lamang source link.</div>`;
 
                 loadingCard.innerHTML = `
                     <div class="bot-header">
-                        <div class="bot-title">AI Document Synthesis, 4 Solutions & Source Summaries</div>
+                        <div class="bot-title">AI Summary, 4 Solutions & Matched Sources</div>
                         <div class="reward-pill">+1 Pt → Total: ${data.total_points} | 🌳 Trees: ${data.trees_planted}</div>
                     </div>
                     <div>
-                        <div class="section-heading">Overall AI Document Summary</div>
+                        <div class="section-heading">Summary</div>
                         <div class="synthesis-box">${escapeHtml(data.ai_synthesis)}</div>
                     </div>
                     <div>
@@ -564,7 +511,7 @@ def home():
                         <div class="solutions-grid">${solutionsHtml || '<div style="font-size:0.9rem; color:var(--text-muted);">No solutions returned. Check GEMINI_API_KEY in Render.</div>'}</div>
                     </div>
                     <div>
-                        <div class="section-heading">AI Summaries per Source</div>
+                        <div class="section-heading">Relevant Sources</div>
                         ${sourcesHtml}
                     </div>
                 `;
