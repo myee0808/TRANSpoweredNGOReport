@@ -2,18 +2,21 @@ from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse
 from typing import Dict, List, Optional
 from pydantic import BaseModel
+from google import genai
 import urllib.request
 import urllib.parse
 import json
 import os
 import re
 
-app = FastAPI(title="AnInag NGO Transparency & Research Chat")
+app = FastAPI(title="AnInag AI Research & 4-Solution Chat")
 
 DB_FILE = "database.json"
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+ai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 
-# --- PERSISTENT DISK STORAGE (JSON FILE) ---
+# --- PERSISTENT DISK STORAGE ---
 def load_database() -> Dict[str, str]:
     if os.path.exists(DB_FILE):
         try:
@@ -31,14 +34,13 @@ def save_database(data: Dict[str, str]):
 
 database: Dict[str, str] = load_database()
 
-# --- OFFICIAL GOVERNMENT & NGO TARGET REPOSITORIES ---
+# --- TARGET GOVERNMENT & NGO REPOSITORIES ---
 GOVERNMENT_NGO_REPOSITORIES = [
     {
         "name": "Official Gazette of the Philippines",
         "url": "https://www.officialgazette.gov.ph/",
         "search_url_template": "https://www.officialgazette.gov.ph/?s={query}",
         "category": "Republic Acts & Executive Orders",
-        "description": "Official government publication for Republic Acts, Executive Orders, Administrative Orders, and Proclamations.",
         "document_summary": "Publishes enacted Republic Acts, presidential issuances, administrative rules, and official state documents detailing legal mandates, budget allocations, and state expenditures."
     },
     {
@@ -46,7 +48,6 @@ GOVERNMENT_NGO_REPOSITORIES = [
         "url": "https://lawphil.net/statutes/repacts/repacts.html",
         "search_url_template": "https://www.google.com/search?q=site:lawphil.net+{query}",
         "category": "Statutory Archive & Legal Codes",
-        "description": "Extensive online legal archive providing full-text access to Republic Acts, codes, and historical statutes.",
         "document_summary": "Maintains a comprehensive full-text statutory archive of Philippine legal codes, historic acts, and judicial provisions governing state transactions."
     },
     {
@@ -54,7 +55,6 @@ GOVERNMENT_NGO_REPOSITORIES = [
         "url": "https://www.congress.gov.ph/legislative-documents",
         "search_url_template": "https://www.congress.gov.ph/legislative-documents/?q={query}",
         "category": "House Bills & Congressional Records",
-        "description": "Repository for House Bills, resolutions, committee reports, and congressional filings.",
         "document_summary": "Archives filed House Bills, committee hearing transcripts, budgetary appropriations resolutions, and legislative tracking records."
     },
     {
@@ -62,7 +62,6 @@ GOVERNMENT_NGO_REPOSITORIES = [
         "url": "https://ldr.senate.gov.ph/subject/government-documents",
         "search_url_template": "https://ldr.senate.gov.ph/subject/government-documents?search={query}",
         "category": "Senate Bills & Public Records",
-        "description": "Official archive for Senate Bills, public government documents, committee hearings, and legislative research.",
         "document_summary": "Provides official records of Senate Bills, committee inquiries, policy position papers, and national policy deliberations."
     },
     {
@@ -70,7 +69,6 @@ GOVERNMENT_NGO_REPOSITORIES = [
         "url": "https://ppp.gov.ph/project-database/",
         "search_url_template": "https://ppp.gov.ph/?s={query}",
         "category": "Infrastructure & Project Registry",
-        "description": "Tracking portal for public infrastructure projects, feasibility studies, investment figures, and procurement status.",
         "document_summary": "Catalogs infrastructure project pipelines, financial feasibility studies, contractual agreements, and bidding parameters for public-private ventures."
     },
     {
@@ -78,7 +76,6 @@ GOVERNMENT_NGO_REPOSITORIES = [
         "url": "https://www.coa.gov.ph/FAQS/is-there-a-manual-or-list-of-documentary-requirements-for-common-government-transactions/",
         "search_url_template": "https://www.coa.gov.ph/?s={query}",
         "category": "Audit Compliance & Financial Records",
-        "description": "Mandatory documentary requirements for government financial transactions, fund disbursements, and compliance auditing.",
         "document_summary": "Details mandatory audit checklists, voucher requirements, disbursement rules, and compliance standards for public fund utilization."
     }
 ]
@@ -90,136 +87,25 @@ class SearchQuery(BaseModel):
     sources: Optional[List[str]] = None
 
 
-STOP_WORDS = {
-    "the", "a", "an", "and", "or", "for", "to", "of", "in", "on", "at", "by",
-    "with", "from", "how", "what", "why", "when", "where", "who", "is", "are",
-    "was", "were", "be", "been", "being", "do", "does", "did", "can", "could",
-    "should", "would", "we", "i", "you", "they", "it", "this", "that", "about",
-    "into", "over", "under", "more", "less", "improve", "fix", "solve", "make"
-}
+def fetch_page_excerpt(url: str, max_chars: int = 2500) -> str:
+    """Fetches actual text from a linked document/page so Gemini can summarize it."""
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            raw_html = resp.read().decode("utf-8", errors="ignore")
+            raw_html = re.sub(r"<(script|style).*?>.*?</\1>", " ", raw_html, flags=re.S | re.I)
+            text = re.sub(r"<[^<]+?>", " ", raw_html)
+            text = re.sub(r"\s+", " ", text).strip()
+            return text[:max_chars]
+    except Exception:
+        return ""
 
 
-def extract_focus_terms(text: str) -> List[str]:
-    words = re.findall(r"[a-zA-Z0-9]+", text.lower())
-    terms = [w for w in words if w not in STOP_WORDS and len(w) > 2]
-    seen = []
-    for t in terms:
-        if t not in seen:
-            seen.append(t)
-    return seen[:4]
-
-
-def build_four_solutions(prompt_text: str) -> List[Dict[str, str]]:
-    raw = prompt_text.strip() if prompt_text.strip() else "public accountability"
-    lower = raw.lower()
-    terms = extract_focus_terms(raw)
-    primary = terms[0] if terms else raw
-    secondary = terms[1] if len(terms) > 1 else "compliance"
-    tertiary = terms[2] if len(terms) > 2 else "public access"
-
-    # Detect domain cues so solutions fit the actual subject of the prompt
-    if any(k in lower for k in ["waste", "trash", "garbage", "sanitation", "drainage", "palengke", "market", "flood"]):
-        domain_label = "Sanitation, Market & Infrastructure"
-        sol_1 = (
-            f"Map collection routes, waste segregation points, and drainage bottlenecks around '{primary}' and '{secondary}' "
-            f"to establish clear daily schedules and designated drop-off rules."
-        )
-        sol_2 = (
-            f"Audit sanitation contracts, tipping/collection fees, and equipment spending tied to '{primary}' "
-            f"against COA rules to verify that funds match actual service delivery."
-        )
-        sol_3 = (
-            f"Run hands-on segregation and maintenance routines with vendors, haulers, and barangay staff handling '{primary}', "
-            f"using practical bins, schedules, and incentives that fit daily operations."
-        )
-        sol_4 = (
-            f"Publish a simple weekly status log tracking collection completion, {secondary} incidents, and resolved reports "
-            f"for '{raw}' so residents can verify follow-through."
-        )
-    elif any(k in lower for k in ["fund", "funds", "budget", "money", "audit", "corruption", "procurement", "confidential", "ghost"]):
-        domain_label = "Fiscal Oversight & Anti-Corruption"
-        sol_1 = (
-            f"Review authorizing laws, executive issuances, and procurement rules governing '{primary}' and '{secondary}' "
-            f"to pinpoint where discretion is too broad or reporting rules are unclear."
-        )
-        sol_2 = (
-            f"Cross-check line-item budgets, disbursement vouchers, liquidation reports, and {secondary} records for '{raw}' "
-            f"using COA documentary checklists to spot red flags."
-        )
-        sol_3 = (
-            f"Partner with civil society auditors, local watchdogs, and {tertiary} advocates to review '{primary}' disclosures "
-            f"and translate technical findings into plain-language alerts."
-        )
-        sol_4 = (
-            f"Track release dates, obligated vs. disbursed amounts, and audit findings on '{primary}' in a living ledger "
-            f"with clear follow-up triggers for unanswered items."
-        )
-    elif any(k in lower for k in ["health", "hospital", "clinic", "water", "heat", "air", "climate", "environment", "tree", "energy"]):
-        domain_label = "Public Health, Climate & Resource Resilience"
-        sol_1 = (
-            f"Examine health, environmental, and local ordinances affecting '{primary}' and '{secondary}' "
-            f"to set measurable safety thresholds, cooling/access standards, and agency duties."
-        )
-        sol_2 = (
-            f"Trace capital and operating funds allocated to '{primary}' and '{secondary}'—including supplies, maintenance, "
-            f"and emergency reserves—to verify equitable distribution."
-        )
-        sol_3 = (
-            f"Co-design low-cost, high-impact measures for '{raw}' with frontline workers and exposed communities "
-            f"(such as shade, clean water points, or rapid response workflows)."
-        )
-        sol_4 = (
-            f"Monitor key indicators for '{primary}' (such as service uptime, {secondary} conditions, and response times) "
-            f"and publish periodic progress summaries."
-        )
-    else:
-        domain_label = "Targeted Policy, Audit & Civic Action"
-        sol_1 = (
-            f"Identify the exact laws, rules, or agency mandates that govern '{primary}' and '{secondary}' "
-            f"and propose concrete rule changes where guidelines are missing or conflicting."
-        )
-        sol_2 = (
-            f"Inspect funding, procurement, and documentary requirements connected to '{raw}' "
-            f"to check whether allocated resources are actually reaching '{secondary}'."
-        )
-        sol_3 = (
-            f"Build a practical action plan for '{primary}' with the people directly affected and local {tertiary} groups, "
-            f"focusing on realistic first steps rather than broad statements."
-        )
-        sol_4 = (
-            f"Create a clear checkpoint tracker for '{raw}' listing concrete deliverables, responsible offices, "
-            f"and verification steps after the initial action."
-        )
-
-    return [
-        {
-            "number": "Solution 1",
-            "title": f"Policy & Rule Adjustment ({domain_label})",
-            "focus": f"Mandates & Standards for '{primary}'",
-            "description": sol_1
-        },
-        {
-            "number": "Solution 2",
-            "title": "Targeted Budget & Audit Check",
-            "focus": f"Funds & Records on '{secondary}'",
-            "description": sol_2
-        },
-        {
-            "number": "Solution 3",
-            "title": "On-the-Ground Execution Plan",
-            "focus": f"Practical Rollout for '{raw}'",
-            "description": sol_3
-        },
-        {
-            "number": "Solution 4",
-            "title": "Milestone & Accountability Tracker",
-            "focus": f"Ongoing Verification of '{primary}'",
-            "description": sol_4
-        }
-    ]
-
-
-def fetch_ecosia_ngo_results(query: str) -> List[Dict]:
+def fetch_web_documents(query: str) -> List[Dict]:
+    """Fetches relevant public web documents and extracts text snippets for Gemini summarization."""
     encoded_query = urllib.parse.quote(f"{query} site:gov.ph OR site:org OR site:lawphil.net")
     url = f"https://html.ecosia.org/search?q={encoded_query}"
 
@@ -230,17 +116,18 @@ def fetch_ecosia_ngo_results(query: str) -> List[Dict]:
 
     extracted_results = []
     try:
-        with urllib.request.urlopen(req, timeout=4) as response:
-            html = response.read().decode("utf-8")
+        with urllib.request.urlopen(req, timeout=5) as response:
+            html = response.read().decode("utf-8", errors="ignore")
             matches = re.findall(r'<a class="result-title"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', html)
             for href, title in matches[:2]:
-                clean_title = re.sub(r"<[^<]+?>", "", title)
+                clean_title = re.sub(r"<[^<]+?>", "", title).strip()
+                excerpt = fetch_page_excerpt(href, max_chars=2200)
                 fragment_url = f"{href}#:~:text={urllib.parse.quote(query)}"
                 extracted_results.append({
                     "title": clean_title,
                     "url": fragment_url,
-                    "source_name": "Ecosia Indexed Web Source",
-                    "category": "Live Deep Web Index"
+                    "raw_url": href,
+                    "excerpt": excerpt
                 })
     except Exception:
         pass
@@ -248,7 +135,88 @@ def fetch_ecosia_ngo_results(query: str) -> List[Dict]:
     return extracted_results
 
 
-# --- 1. CHAT SEARCH, SOURCE SUMMARIES, 4 SOLUTIONS & POINT REWARD ROUTE ---
+def generate_gemini_analysis(prompt: str, sources_context: str) -> dict:
+    """Calls Gemini 2.5 Flash to summarize each source/document and generate 4 tailored solutions."""
+    if not ai_client:
+        return {
+            "ai_synthesis": "GEMINI_API_KEY is missing on Render. Add GEMINI_API_KEY under Render -> Environment to activate live AI summaries and 4 solutions.",
+            "source_summaries": {},
+            "solutions": []
+        }
+
+    schema = {
+        "type": "OBJECT",
+        "properties": {
+            "overall_summary": {"type": "STRING"},
+            "source_summaries": {
+                "type": "ARRAY",
+                "items": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "source_name": {"type": "STRING"},
+                        "summary": {"type": "STRING"}
+                    },
+                    "required": ["source_name", "summary"]
+                }
+            },
+            "solutions": {
+                "type": "ARRAY",
+                "items": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "number": {"type": "STRING"},
+                        "title": {"type": "STRING"},
+                        "focus": {"type": "STRING"},
+                        "description": {"type": "STRING"}
+                    },
+                    "required": ["number", "title", "focus", "description"]
+                }
+            }
+        },
+        "required": ["overall_summary", "source_summaries", "solutions"]
+    }
+
+    ai_prompt = f"""
+You are AnInag, a civic research and document summarization assistant.
+User Prompt: "{prompt}"
+
+Retrieved Sources & Document Excerpts:
+{sources_context}
+
+Instructions:
+1. "overall_summary": Summarize the retrieved document excerpts and repository context directly in relation to the User Prompt. Do not invent facts outside the provided text.
+2. "source_summaries": For EVERY source block listed above (matching the exact "source_name" inside brackets), write a clear, prompt-aligned summary explaining how that document or repository informs the User Prompt.
+3. "solutions": Generate 4 distinct, concrete, actionable solutions (numbered "Solution 1", "Solution 2", "Solution 3", "Solution 4") specifically tailored to solve or address the exact User Prompt.
+"""
+
+    try:
+        response = ai_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=ai_prompt,
+            config={
+                "response_mime_type": "application/json",
+                "response_schema": schema,
+            },
+        )
+        data = json.loads(response.text)
+        summary_map = {
+            item["source_name"]: item["summary"]
+            for item in data.get("source_summaries", [])
+        }
+        return {
+            "ai_synthesis": data.get("overall_summary", ""),
+            "source_summaries": summary_map,
+            "solutions": data.get("solutions", [])[:4]
+        }
+    except Exception as e:
+        return {
+            "ai_synthesis": f"AI summarization error: {str(e)}",
+            "source_summaries": {},
+            "solutions": []
+        }
+
+
+# --- 1. CHAT PROMPT, GEMINI SUMMARIES & POINT REWARD ENDPOINT ---
 @app.post("/api/search")
 def search_ngo_data(payload: SearchQuery):
     raw_prompt = payload.query.strip()
@@ -256,74 +224,68 @@ def search_ngo_data(payload: SearchQuery):
     user_id = payload.user_id.strip() if payload.user_id else "user_001"
     encoded_user_query = urllib.parse.quote(user_query)
 
+    # +1 point per prompt, 6 points = 1 tree
     point_tag = f"points_{user_id}"
     current_points = int(database.get(point_tag, "0"))
     new_points = current_points + 1
     database[point_tag] = str(new_points)
     save_database(database)
+    trees_planted = new_points // 6
 
-    trees_planted = new_points // 6  # 6 points = 1 tree calculation
-    solutions = build_four_solutions(raw_prompt)
+    web_docs = fetch_web_documents(raw_prompt)
 
+    context_chunks = []
     results = []
+
     for idx, repo in enumerate(GOVERNMENT_NGO_REPOSITORIES):
         direct_deep_link = repo["search_url_template"].format(query=encoded_user_query)
-        document_gist = (
-            f"Document Gist & Content Overview: Within the {repo['name']} repository, records and guidelines concerning '{user_query}' "
-            f"outline {repo['document_summary'].lower()} This archive provides direct statutory authority, compliance frameworks, "
-            f"and official documentation relevant to your search."
-        )
+        source_label = f"{repo['name']} ({repo['category']})"
+        context_chunks.append(f"[{source_label}]\n{repo['document_summary']}")
 
         results.append({
             "id": idx + 1,
-            "title": f"{repo['name']}: Targeted Records for '{user_query}'",
+            "title": f"{repo['name']}: Records for '{raw_prompt}'",
+            "source_key": source_label,
             "authors": repo["category"],
             "year": 2026,
-            "sample_size": "Complete Target Repository Match",
             "journal": repo["name"],
-            "takeaway": document_gist,
-            "consensus_score": 96 - (idx * 2),
+            "takeaway": repo["document_summary"],
             "citation_url": direct_deep_link,
             "badge": "Official Target Repository"
         })
 
-    web_results = fetch_ecosia_ngo_results(user_query)
-    for idx, web_item in enumerate(web_results):
+    for idx, doc in enumerate(web_docs):
+        source_label = f"{doc['title']} (Web Document)"
+        excerpt_text = doc["excerpt"] if doc["excerpt"] else "No full text excerpt retrieved; title and URL matched."
+        context_chunks.append(f"[{source_label}]\nURL: {doc['raw_url']}\nExcerpt: {excerpt_text}")
+
         results.append({
             "id": len(GOVERNMENT_NGO_REPOSITORIES) + idx + 1,
-            "title": web_item["title"],
-            "authors": "Ecosia Indexed Document",
+            "title": doc["title"],
+            "source_key": source_label,
+            "authors": "Web Indexed Document",
             "year": 2026,
-            "sample_size": "Highlighted Passage",
-            "journal": "Open Web Search Index",
-            "takeaway": (
-                f"Document Gist & Content Overview: Live web source data for '{user_query}' details specific operational context, "
-                f"background data, and public disclosures relevant to your prompt."
-            ),
-            "consensus_score": 85 - (idx * 4),
-            "citation_url": web_item["url"],
-            "badge": "Live Text-Fragment Link"
+            "journal": "Public Web Document",
+            "takeaway": excerpt_text[:300],
+            "citation_url": doc["url"],
+            "badge": "Live Document Source"
         })
 
-    ai_synthesis_text = (
-        f"AnInag Comprehensive AI Synthesis: Evaluating across all registered official target repositories "
-        f"(Official Gazette, LawPhil, House Legislative Documents, Senate Archives, PPP Database, and COA Audit Guidelines), "
-        f"prompts regarding '{user_query}' intersect with multiple legal mandates, financial reporting structures, and compliance protocols."
-    )
+    ai_output = generate_gemini_analysis(raw_prompt, "\n\n".join(context_chunks))
+    ai_source_summaries = ai_output.get("source_summaries", {})
+
+    for r in results:
+        if r["source_key"] in ai_source_summaries and ai_source_summaries[r["source_key"]]:
+            r["takeaway"] = ai_source_summaries[r["source_key"]]
 
     return {
-        "query": user_query,
+        "query": raw_prompt,
         "user_id": user_id,
         "points_earned": 1,
         "total_points": new_points,
         "trees_planted": trees_planted,
-        "ai_synthesis": ai_synthesis_text,
-        "solutions": solutions,
-        "consensus_summary": {
-            "affirmative_percentage": 95,
-            "verdict": f"Evaluated Across All {len(GOVERNMENT_NGO_REPOSITORIES)} Target Repositories",
-            "overview": f"1 point awarded to '{user_id}'. Total Points: {new_points} | Trees Planted: {trees_planted}."
-        },
+        "ai_synthesis": ai_output.get("ai_synthesis", ""),
+        "solutions": ai_output.get("solutions", []),
         "results": results
     }
 
@@ -335,7 +297,7 @@ def get_user_points(user_id: str):
     return {"user_id": user_id, "points": points, "trees": trees}
 
 
-# --- 2. CHATBOT FRONTEND WITH SOURCE SUMMARIES + 4 SOLUTIONS ---
+# --- 2. CONVERSATIONAL CHATBOT FRONTEND ---
 @app.get("/", response_class=HTMLResponse)
 def home():
     return """<!DOCTYPE html>
@@ -343,7 +305,7 @@ def home():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AnInag Chat - Research Summaries & 4 Solutions</title>
+    <title>AnInag AI Chat - Document Summaries & 4 Solutions</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -358,320 +320,108 @@ def home():
             --accent-cream: #D9CBAE;
             --badge-bg: #E4CDAF;
         }
-
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
-        body {
-            background-color: var(--bg);
-            color: var(--text-main);
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-        }
-
+        body { background-color: var(--bg); color: var(--text-main); min-height: 100vh; display: flex; flex-direction: column; }
         header {
-            background: var(--card-bg);
-            border-bottom: 2px solid var(--border);
-            padding: 14px 28px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 12px;
-            position: sticky;
-            top: 0;
-            z-index: 10;
+            background: var(--card-bg); border-bottom: 2px solid var(--border);
+            padding: 14px 28px; display: flex; justify-content: space-between; align-items: center;
+            flex-wrap: wrap; gap: 12px; position: sticky; top: 0; z-index: 10;
         }
-        .logo {
-            font-size: 1.3rem;
-            font-weight: 800;
-            color: var(--primary);
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        .logo span {
-            background: var(--brand);
-            color: #fff;
-            padding: 2px 8px;
-            border-radius: 6px;
-            font-size: 0.72rem;
-        }
-
-        .header-controls {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            flex-wrap: wrap;
-        }
-        .user-id-group {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            font-size: 0.82rem;
-            color: var(--text-muted);
-        }
+        .logo { font-size: 1.3rem; font-weight: 800; color: var(--primary); display: flex; align-items: center; gap: 8px; }
+        .logo span { background: var(--brand); color: #fff; padding: 2px 8px; border-radius: 6px; font-size: 0.72rem; }
+        .header-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+        .user-id-group { display: flex; align-items: center; gap: 6px; font-size: 0.82rem; color: var(--text-muted); }
         .user-id-input {
-            border: 1px solid var(--border);
-            background: var(--bg);
-            padding: 5px 10px;
-            border-radius: 8px;
-            outline: none;
-            font-weight: 600;
-            color: var(--primary);
-            width: 110px;
+            border: 1px solid var(--border); background: var(--bg); padding: 5px 10px;
+            border-radius: 8px; outline: none; font-weight: 600; color: var(--primary); width: 110px;
         }
         .user-points-badge {
-            background: var(--accent-cream);
-            border: 1px solid var(--border);
-            color: var(--primary);
-            padding: 6px 14px;
-            border-radius: 20px;
-            font-weight: 700;
-            font-size: 0.85rem;
+            background: var(--accent-cream); border: 1px solid var(--border); color: var(--primary);
+            padding: 6px 14px; border-radius: 20px; font-weight: 700; font-size: 0.85rem;
         }
-
         .chat-shell {
-            max-width: 940px;
-            width: 100%;
-            margin: 0 auto;
-            padding: 20px 18px 130px;
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            gap: 18px;
+            max-width: 940px; width: 100%; margin: 0 auto; padding: 20px 18px 130px;
+            flex: 1; display: flex; flex-direction: column; gap: 18px;
         }
-
-        .welcome-card {
-            background: var(--card-bg);
-            border: 1px solid var(--border);
-            border-radius: 16px;
-            padding: 22px;
-        }
-        .welcome-card h1 {
-            font-size: 1.45rem;
-            color: var(--primary);
-            margin-bottom: 6px;
-        }
-        .welcome-card p {
-            font-size: 0.92rem;
-            color: var(--text-muted);
-            margin-bottom: 14px;
-        }
-        .repo-chips {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 6px;
-        }
+        .welcome-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 16px; padding: 22px; }
+        .welcome-card h1 { font-size: 1.45rem; color: var(--primary); margin-bottom: 6px; }
+        .welcome-card p { font-size: 0.92rem; color: var(--text-muted); margin-bottom: 14px; }
+        .repo-chips { display: flex; flex-wrap: wrap; gap: 6px; }
         .repo-chip {
-            background: var(--accent-cream);
-            border: 1px solid var(--border);
-            padding: 4px 10px;
-            border-radius: 20px;
-            font-size: 0.74rem;
-            color: var(--primary);
-            text-decoration: none;
-            font-weight: 600;
+            background: var(--accent-cream); border: 1px solid var(--border); padding: 4px 10px;
+            border-radius: 20px; font-size: 0.74rem; color: var(--primary); text-decoration: none; font-weight: 600;
         }
-        .repo-chip:hover {
-            background: var(--brand);
-            color: #fff;
-        }
-
-        .message-row {
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-        }
+        .repo-chip:hover { background: var(--brand); color: #fff; }
+        .message-row { display: flex; flex-direction: column; gap: 6px; }
         .user-bubble {
-            align-self: flex-end;
-            background: var(--brand);
-            color: #fff;
-            padding: 12px 18px;
-            border-radius: 18px 18px 4px 18px;
-            max-width: 78%;
-            font-size: 0.95rem;
-            line-height: 1.45;
+            align-self: flex-end; background: var(--brand); color: #fff; padding: 12px 18px;
+            border-radius: 18px 18px 4px 18px; max-width: 78%; font-size: 0.95rem; line-height: 1.45;
         }
-        .user-meta {
-            align-self: flex-end;
-            font-size: 0.75rem;
-            color: var(--text-muted);
-        }
-
+        .user-meta { align-self: flex-end; font-size: 0.75rem; color: var(--text-muted); }
         .bot-card {
-            background: var(--card-bg);
-            border: 1px solid var(--border);
-            border-radius: 16px;
-            padding: 22px;
-            box-shadow: 0 2px 10px rgba(91, 58, 41, 0.04);
-            display: flex;
-            flex-direction: column;
-            gap: 18px;
+            background: var(--card-bg); border: 1px solid var(--border); border-radius: 16px;
+            padding: 22px; box-shadow: 0 2px 10px rgba(91, 58, 41, 0.04); display: flex; flex-direction: column; gap: 18px;
         }
         .bot-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 8px;
-            border-bottom: 1px solid var(--border);
-            padding-bottom: 10px;
+            display: flex; justify-content: space-between; align-items: center;
+            flex-wrap: wrap; gap: 8px; border-bottom: 1px solid var(--border); padding-bottom: 10px;
         }
-        .bot-title {
-            font-weight: 700;
-            font-size: 0.9rem;
-            color: var(--brand);
-            text-transform: uppercase;
-        }
+        .bot-title { font-weight: 700; font-size: 0.9rem; color: var(--brand); text-transform: uppercase; }
         .reward-pill {
-            background: var(--bg);
-            border: 1px solid var(--border);
-            padding: 4px 10px;
-            border-radius: 12px;
-            font-size: 0.78rem;
-            font-weight: 600;
-            color: var(--primary);
+            background: var(--bg); border: 1px solid var(--border); padding: 4px 10px;
+            border-radius: 12px; font-size: 0.78rem; font-weight: 600; color: var(--primary);
         }
-
-        .section-heading {
-            font-size: 0.85rem;
-            font-weight: 700;
-            text-transform: uppercase;
-            color: var(--text-muted);
-            margin-bottom: 8px;
-        }
-
+        .section-heading { font-size: 0.85rem; font-weight: 700; text-transform: uppercase; color: var(--text-muted); margin-bottom: 8px; }
         .synthesis-box {
-            border: 2px solid var(--accent-cream);
-            border-radius: 12px;
-            padding: 14px 16px;
-            background: #FCFBF5;
-            font-size: 0.94rem;
-            line-height: 1.55;
+            border: 2px solid var(--accent-cream); border-radius: 12px; padding: 14px 16px;
+            background: #FCFBF5; font-size: 0.94rem; line-height: 1.55;
         }
-
-        .solutions-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-            gap: 12px;
-        }
+        .solutions-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
         .solution-card {
-            background: var(--bg);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 14px;
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
+            background: var(--bg); border: 1px solid var(--border); border-radius: 12px;
+            padding: 14px; display: flex; flex-direction: column; gap: 6px;
         }
         .solution-badge {
-            align-self: flex-start;
-            background: var(--brand);
-            color: #fff;
-            font-size: 0.72rem;
-            font-weight: 700;
-            padding: 2px 8px;
-            border-radius: 6px;
+            align-self: flex-start; background: var(--brand); color: #fff;
+            font-size: 0.72rem; font-weight: 700; padding: 2px 8px; border-radius: 6px;
         }
-        .solution-title {
-            font-size: 0.98rem;
-            font-weight: 700;
-            color: var(--primary);
-        }
-        .solution-focus {
-            font-size: 0.78rem;
-            font-weight: 600;
-            color: var(--text-muted);
-        }
-        .solution-desc {
-            font-size: 0.87rem;
-            line-height: 1.5;
-            color: var(--primary);
-        }
-
+        .solution-title { font-size: 0.98rem; font-weight: 700; color: var(--primary); }
+        .solution-focus { font-size: 0.78rem; font-weight: 600; color: var(--text-muted); }
+        .solution-desc { font-size: 0.87rem; line-height: 1.5; color: var(--primary); }
         .source-card {
-            background: var(--card-bg);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 16px;
-            margin-bottom: 12px;
+            background: var(--card-bg); border: 1px solid var(--border);
+            border-radius: 12px; padding: 16px; margin-bottom: 12px;
         }
         .source-badge {
-            background: var(--badge-bg);
-            color: var(--primary);
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-weight: 600;
-            font-size: 0.78rem;
+            background: var(--badge-bg); color: var(--primary); padding: 2px 8px;
+            border-radius: 4px; font-weight: 600; font-size: 0.78rem;
         }
         .takeaway-box {
-            background: var(--bg);
-            border-left: 3px solid var(--brand);
-            padding: 12px 14px;
-            margin: 10px 0;
-            border-radius: 0 8px 8px 0;
+            background: var(--bg); border-left: 3px solid var(--brand);
+            padding: 12px 14px; margin: 10px 0; border-radius: 0 8px 8px 0;
         }
-        .source-link {
-            color: var(--brand);
-            text-decoration: none;
-            font-weight: 600;
-            font-size: 0.88rem;
-        }
-        .source-link:hover {
-            text-decoration: underline;
-            color: var(--brand-dark);
-        }
-
+        .source-link { color: var(--brand); text-decoration: none; font-weight: 600; font-size: 0.88rem; }
+        .source-link:hover { text-decoration: underline; color: var(--brand-dark); }
         .composer-bar {
-            position: fixed;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            background: var(--card-bg);
-            border-top: 2px solid var(--border);
-            padding: 12px 18px;
-            z-index: 20;
+            position: fixed; bottom: 0; left: 0; right: 0;
+            background: var(--card-bg); border-top: 2px solid var(--border); padding: 12px 18px; z-index: 20;
         }
-        .composer-inner {
-            max-width: 940px;
-            margin: 0 auto;
-            display: flex;
-            gap: 10px;
-            align-items: center;
-        }
+        .composer-inner { max-width: 940px; margin: 0 auto; display: flex; gap: 10px; align-items: center; }
         .prompt-input {
-            flex: 1;
-            border: 2px solid var(--border);
-            border-radius: 14px;
-            padding: 12px 16px;
-            font-size: 0.95rem;
-            color: var(--primary);
-            background: var(--bg);
-            outline: none;
+            flex: 1; border: 2px solid var(--border); border-radius: 14px; padding: 12px 16px;
+            font-size: 0.95rem; color: var(--primary); background: var(--bg); outline: none;
         }
-        .prompt-input:focus {
-            border-color: var(--brand);
-            background: #fff;
-        }
+        .prompt-input:focus { border-color: var(--brand); background: #fff; }
         .send-btn {
-            background: var(--brand);
-            color: #fff;
-            border: none;
-            border-radius: 12px;
-            padding: 12px 20px;
-            font-weight: 700;
-            font-size: 0.9rem;
-            cursor: pointer;
-            white-space: nowrap;
+            background: var(--brand); color: #fff; border: none; border-radius: 12px;
+            padding: 12px 20px; font-weight: 700; font-size: 0.9rem; cursor: pointer; white-space: nowrap;
         }
-        .send-btn:hover {
-            background: var(--brand-dark);
-        }
+        .send-btn:hover { background: var(--brand-dark); }
     </style>
 </head>
 <body>
     <header>
-        <div class="logo">AnInag Chat <span>Summaries + 4 Solutions</span></div>
+        <div class="logo">AnInag AI Chat <span>Gemini Summaries + 4 Solutions</span></div>
         <div class="header-controls">
             <div class="user-id-group">
                 <label for="userIdInput">User ID:</label>
@@ -684,8 +434,8 @@ def home():
 
     <main class="chat-shell" id="chatThread">
         <section class="welcome-card">
-            <h1>AnInag Research & Solution Chat</h1>
-            <p>Enter a prompt to get prompt-aligned source summaries, <strong>4 distinct solutions</strong>, and <strong>+1 point</strong> per prompt (<strong>6 points = 1 tree</strong>) synced with your MIT App Inventor app.</p>
+            <h1>AnInag AI Document Summarizer & Solution Generator</h1>
+            <p>Enter any prompt to summarize matching public documents and repositories, generate <strong>4 tailored solutions</strong>, and earn <strong>+1 point</strong> per prompt (<strong>6 points = 1 tree</strong>) synced with your MIT App Inventor app.</p>
             <div class="repo-chips">
                 <a class="repo-chip" href="https://www.officialgazette.gov.ph/" target="_blank">Official Gazette ↗</a>
                 <a class="repo-chip" href="https://lawphil.net/" target="_blank">LawPhil Archive ↗</a>
@@ -703,7 +453,7 @@ def home():
                 type="text"
                 id="searchInput"
                 class="prompt-input"
-                placeholder="Enter your prompt (e.g., confidential funds or public market waste management)..."
+                placeholder="Enter your prompt (e.g., public market cooling and waste management)..."
                 onkeydown="if (event.key === 'Enter') executeSearch()"
             >
             <button class="send-btn" onclick="executeSearch()">Send (+1 Pt)</button>
@@ -715,15 +465,6 @@ def home():
             const div = document.createElement('div');
             div.textContent = text || '';
             return div.innerHTML;
-        }
-
-        function fallbackSolutions(query) {
-            return [
-                { number: "Solution 1", title: "Legal & Policy Framework Solution", focus: "Statutory & Regulatory Alignment", description: `Review laws, executive orders, and bills around '${query}' to clarify mandates and close policy gaps.` },
-                { number: "Solution 2", title: "Budget & Audit Oversight Solution", focus: "Fund Tracking & COA Compliance", description: `Check fund allocations, disbursements, and COA documentary requirements for '${query}'.` },
-                { number: "Solution 3", title: "Operational & Community Co-Design Solution", focus: "Practical Implementation on the Ground", description: `Co-design workflows for '${query}' with affected communities, workers, and local partners.` },
-                { number: "Solution 4", title: "Public Monitoring & Feedback Solution", focus: "Ongoing Accountability & Reporting", description: `Track milestones, agency follow-ups, and public updates for '${query}' over time.` }
-            ];
         }
 
         async function fetchUserPoints() {
@@ -756,7 +497,7 @@ def home():
 
             const loadingCard = document.createElement('div');
             loadingCard.className = 'bot-card';
-            loadingCard.innerHTML = `<div style="color:var(--brand); font-weight:600;">Generating prompt-aligned source summaries, 4 solutions, and syncing points...</div>`;
+            loadingCard.innerHTML = `<div style="color:var(--brand); font-weight:600;">Summarizing documents, generating 4 tailored solutions, and syncing points...</div>`;
             thread.appendChild(loadingCard);
             loadingCard.scrollIntoView({ behavior: 'smooth', block: 'end' });
 
@@ -770,11 +511,7 @@ def home():
 
                 document.getElementById('headerPointsBadge').innerText = `⭐ Points: ${data.total_points} | 🌳 Trees: ${data.trees_planted}`;
 
-                const solutionsList = (Array.isArray(data.solutions) && data.solutions.length > 0)
-                    ? data.solutions
-                    : fallbackSolutions(query);
-
-                const solutionsHtml = solutionsList.map(sol => `
+                const solutionsHtml = (data.solutions || []).map(sol => `
                     <div class="solution-card">
                         <span class="solution-badge">${escapeHtml(sol.number)}</span>
                         <div class="solution-title">${escapeHtml(sol.title)}</div>
@@ -791,34 +528,34 @@ def home():
                         </div>
                         <h3 style="font-size:1.05rem; font-weight:600; color:var(--primary);">${escapeHtml(res.title)}</h3>
                         <div class="takeaway-box">
-                            <div style="font-size:0.74rem; font-weight:700; color:var(--text-muted); text-transform:uppercase;">Document Gist & Summary</div>
+                            <div style="font-size:0.74rem; font-weight:700; color:var(--text-muted); text-transform:uppercase;">AI Document Summary</div>
                             <div style="font-size:0.92rem; margin-top:4px; line-height:1.5; color:var(--primary);">${escapeHtml(res.takeaway)}</div>
                         </div>
-                        <a href="${escapeHtml(res.citation_url)}" target="_blank" class="source-link">🔗 Open Target Document Match (${escapeHtml(res.journal)}) ↗</a>
+                        <a href="${escapeHtml(res.citation_url)}" target="_blank" class="source-link">🔗 Open Source (${escapeHtml(res.journal)}) ↗</a>
                     </div>
                 `).join('');
 
                 loadingCard.innerHTML = `
                     <div class="bot-header">
-                        <div class="bot-title">AnInag Synthesis, 4 Solutions & Source Summaries</div>
+                        <div class="bot-title">AI Document Synthesis, 4 Solutions & Source Summaries</div>
                         <div class="reward-pill">+1 Pt → Total: ${data.total_points} | 🌳 Trees: ${data.trees_planted}</div>
                     </div>
                     <div>
-                        <div class="section-heading">Overall Synthesis</div>
+                        <div class="section-heading">Overall AI Document Summary</div>
                         <div class="synthesis-box">${escapeHtml(data.ai_synthesis)}</div>
                     </div>
                     <div>
-                        <div class="section-heading">4 Proposed Solutions</div>
-                        <div class="solutions-grid">${solutionsHtml}</div>
+                        <div class="section-heading">4 Tailored Solutions</div>
+                        <div class="solutions-grid">${solutionsHtml || '<div style="font-size:0.9rem; color:var(--text-muted);">No solutions returned. Check GEMINI_API_KEY in Render.</div>'}</div>
                     </div>
                     <div>
-                        <div class="section-heading">Source Summaries Aligned to Your Prompt</div>
+                        <div class="section-heading">AI Summaries per Source</div>
                         ${sourcesHtml}
                     </div>
                 `;
                 loadingCard.scrollIntoView({ behavior: 'smooth', block: 'end' });
             } catch (err) {
-                loadingCard.innerHTML = `<div style="color:#8F4E3E; font-weight:600;">Error processing prompt. Make sure your updated main.py is deployed and running.</div>`;
+                loadingCard.innerHTML = `<div style="color:#8F4E3E; font-weight:600;">Error communicating with backend server.</div>`;
             }
         }
 
@@ -828,7 +565,7 @@ def home():
 </html>"""
 
 
-# --- 3. TINYWEBDB API ENDPOINTS FOR MIT APP INVENTOR ---
+# --- 3. TINYWEBDB ENDPOINTS FOR MIT APP INVENTOR ---
 @app.post("/storeval")
 def store_val(tag: str = Form(...), value: str = Form(...)):
     database[tag] = value
