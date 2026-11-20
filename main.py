@@ -1,22 +1,48 @@
 from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse
+from fastapi.middleware.gzip import GZipMiddleware
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional
 from pydantic import BaseModel
 from google import genai
 import urllib.request
 import urllib.parse
+import threading
 import json
+import time
 import os
 import re
 
 app = FastAPI(title="AnInag AI Research & 4-Solution Chat")
+# SPEED: compress the big HTML page and JSON replies (smaller = faster to download)
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 DB_FILE = "database.json"
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 ai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
+HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+
+# SPEED: compile regexes once instead of on every request
+RE_WORDS = re.compile(r"[a-zA-Z0-9]+")
+RE_SCRIPT_STYLE = re.compile(r"<(script|style).*?>.*?</\1>", re.S | re.I)
+RE_TAGS = re.compile(r"<[^<]+?>")
+RE_SPACES = re.compile(r"\s+")
+RE_RESULT = re.compile(r'<a class="result-title"[^>]*href="([^"]+)"[^>]*>(.*?)</a>')
+RE_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.S)
+RE_JSON_OBJ = re.compile(r"\{.*\}", re.S)
+
+# SPEED: one shared pool for fetching pages in parallel
+FETCH_POOL = ThreadPoolExecutor(max_workers=8)
+
+# SPEED: only read the first part of each web page (the text we need is near the top)
+MAX_PAGE_BYTES = 150_000
+
 
 # --- PERSISTENT DISK STORAGE ---
+db_lock = threading.Lock()
+
+
 def load_database() -> Dict[str, str]:
     if os.path.exists(DB_FILE):
         try:
@@ -28,8 +54,13 @@ def load_database() -> Dict[str, str]:
 
 
 def save_database(data: Dict[str, str]):
-    with open(DB_FILE, "w") as f:
-        json.dump(data, f)
+    # SAFE + FAST: write to a temp file then swap, so the file never gets corrupted
+    tmp_file = DB_FILE + ".tmp"
+    with db_lock:
+        snapshot = dict(data)
+    with open(tmp_file, "w") as f:
+        json.dump(snapshot, f, separators=(",", ":"))
+    os.replace(tmp_file, DB_FILE)
 
 
 database: Dict[str, str] = load_database()
@@ -41,8 +72,32 @@ class SearchQuery(BaseModel):
     sources: Optional[List[str]] = None
 
 
+# --- SPEED: remember recent answers so repeated prompts are instant ---
+CACHE_TTL_SECONDS = 60 * 30  # 30 minutes
+CACHE_MAX_ITEMS = 200
+_cache: Dict[str, tuple] = {}
+_cache_lock = threading.Lock()
+
+
+def cache_get(key: str):
+    with _cache_lock:
+        item = _cache.get(key)
+        if item and time.time() - item[0] < CACHE_TTL_SECONDS:
+            return item[1]
+        _cache.pop(key, None)
+        return None
+
+
+def cache_set(key: str, value):
+    with _cache_lock:
+        if len(_cache) >= CACHE_MAX_ITEMS:
+            oldest = min(_cache, key=lambda k: _cache[k][0])
+            _cache.pop(oldest, None)
+        _cache[key] = (time.time(), value)
+
+
 def is_relevant_to_query(query: str, title: str, text: str) -> bool:
-    words = [w.lower() for w in re.findall(r"[a-zA-Z0-9]+", query) if len(w) > 2]
+    words = [w.lower() for w in RE_WORDS.findall(query) if len(w) > 2]
     if not words:
         return True
     haystack = f"{title} {text}".lower()
@@ -52,15 +107,12 @@ def is_relevant_to_query(query: str, title: str, text: str) -> bool:
 def fetch_page_excerpt(url: str, max_chars: int = 1200) -> str:
     """Fetches a short text excerpt from a page so AI can summarize it."""
     try:
-        req = urllib.request.Request(
-            url,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        )
+        req = urllib.request.Request(url, headers=HEADERS)
         with urllib.request.urlopen(req, timeout=2.5) as resp:
-            raw_html = resp.read().decode("utf-8", errors="ignore")
-            raw_html = re.sub(r"<(script|style).*?>.*?</\1>", " ", raw_html, flags=re.S | re.I)
-            text = re.sub(r"<[^<]+?>", " ", raw_html)
-            text = re.sub(r"\s+", " ", text).strip()
+            raw_html = resp.read(MAX_PAGE_BYTES).decode("utf-8", errors="ignore")
+            raw_html = RE_SCRIPT_STYLE.sub(" ", raw_html)
+            text = RE_TAGS.sub(" ", raw_html)
+            text = RE_SPACES.sub(" ", text).strip()
             return text[:max_chars]
     except Exception:
         return ""
@@ -70,35 +122,46 @@ def fetch_web_documents(query: str) -> List[Dict]:
     """Fetches web results and keeps only sources that match the user's prompt."""
     encoded_query = urllib.parse.quote(f"{query} (site:gov.ph OR site:org OR site:lawphil.net)")
     url = f"https://html.ecosia.org/search?q={encoded_query}"
+    req = urllib.request.Request(url, headers=HEADERS)
 
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-    )
-
-    extracted_results = []
+    candidates = []
     try:
         with urllib.request.urlopen(req, timeout=3) as response:
             html = response.read().decode("utf-8", errors="ignore")
-            matches = re.findall(r'<a class="result-title"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', html)
-            for href, title in matches[:5]:
-                clean_title = re.sub(r"<[^<]+?>", "", title).strip()
-                if not clean_title or not href.startswith("http"):
-                    continue
-                excerpt = fetch_page_excerpt(href, max_chars=1200)
-                if not is_relevant_to_query(query, clean_title, excerpt):
-                    continue
-                fragment_url = f"{href}#:~:text={urllib.parse.quote(query)}"
-                extracted_results.append({
-                    "title": clean_title,
-                    "url": fragment_url,
-                    "raw_url": href,
-                    "excerpt": excerpt
-                })
-                if len(extracted_results) >= 3:
-                    break
+        for href, title in RE_RESULT.findall(html)[:5]:
+            clean_title = RE_TAGS.sub("", title).strip()
+            if clean_title and href.startswith("http"):
+                candidates.append((href, clean_title))
     except Exception:
-        pass
+        return []
+
+    if not candidates:
+        return []
+
+    # SPEED: open all 5 pages AT THE SAME TIME instead of one after another
+    # (before: up to 5 x 2.5s = 12.5s, now: about 2.5s max)
+    excerpts: Dict[str, str] = {}
+    futures = {FETCH_POOL.submit(fetch_page_excerpt, href, 1200): href for href, _ in candidates}
+    try:
+        for fut in as_completed(futures, timeout=3):
+            excerpts[futures[fut]] = fut.result()
+    except Exception:
+        pass  # slow pages are skipped
+
+    extracted_results = []
+    quoted_query = urllib.parse.quote(query)
+    for href, clean_title in candidates:  # keep the original search order
+        excerpt = excerpts.get(href, "")
+        if not is_relevant_to_query(query, clean_title, excerpt):
+            continue
+        extracted_results.append({
+            "title": clean_title,
+            "url": f"{href}#:~:text={quoted_query}",
+            "raw_url": href,
+            "excerpt": excerpt
+        })
+        if len(extracted_results) >= 3:
+            break
 
     return extracted_results
 
@@ -106,11 +169,11 @@ def fetch_web_documents(query: str) -> List[Dict]:
 def extract_json_object(text: str) -> dict:
     cleaned = text.strip()
     if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned, flags=re.S).strip()
+        cleaned = RE_FENCE.sub("", cleaned).strip()
     try:
         return json.loads(cleaned)
     except Exception:
-        match = re.search(r"\{.*\}", cleaned, flags=re.S)
+        match = RE_JSON_OBJ.search(cleaned)
         if match:
             return json.loads(match.group(0))
         raise
@@ -205,6 +268,22 @@ Return ONLY valid JSON (no ```json code fences) with this exact structure:
         }
 
 
+
+
+def save_database_in_background():
+    # SPEED: don't make the user wait for the disk write
+    FETCH_POOL.submit(save_database, database)
+
+
+def add_point(user_id: str) -> int:
+    point_tag = f"points_{user_id}"
+    with db_lock:
+        new_points = int(database.get(point_tag, "0")) + 1
+        database[point_tag] = str(new_points)
+    save_database_in_background()
+    return new_points
+
+
 # --- 1. CHAT PROMPT, AI SUMMARIES, 4 SOLUTIONS & POINT REWARD ---
 @app.post("/api/search")
 def search_ngo_data(payload: SearchQuery):
@@ -212,41 +291,50 @@ def search_ngo_data(payload: SearchQuery):
     user_id = payload.user_id.strip() if payload.user_id else "user_001"
 
     # +1 point per prompt, 6 points = 1 tree
-    point_tag = f"points_{user_id}"
-    current_points = int(database.get(point_tag, "0"))
-    new_points = current_points + 1
-    database[point_tag] = str(new_points)
-    save_database(database)
+    new_points = add_point(user_id)
     trees_planted = new_points // 6
 
-    web_docs = fetch_web_documents(raw_prompt)
+    # SPEED: same prompt asked again recently? answer instantly from memory
+    cache_key = raw_prompt.lower()
+    cached = cache_get(cache_key)
+    if cached is None:
+        web_docs = fetch_web_documents(raw_prompt)
 
-    context_chunks = []
-    results = []
+        context_chunks = []
+        results = []
 
-    for idx, doc in enumerate(web_docs):
-        source_label = f"{doc['title']} (Matched Source)"
-        excerpt_text = doc["excerpt"] if doc["excerpt"] else f"Matched result for '{raw_prompt}'."
-        context_chunks.append(f"[{source_label}]\nURL: {doc['raw_url']}\nExcerpt: {excerpt_text}")
+        for idx, doc in enumerate(web_docs):
+            source_label = f"{doc['title']} (Matched Source)"
+            excerpt_text = doc["excerpt"] if doc["excerpt"] else f"Matched result for '{raw_prompt}'."
+            context_chunks.append(f"[{source_label}]\nURL: {doc['raw_url']}\nExcerpt: {excerpt_text}")
 
-        results.append({
-            "id": idx + 1,
-            "title": doc["title"],
-            "source_key": source_label,
-            "authors": "Matched Source",
-            "year": 2026,
-            "journal": "Verified Result",
-            "takeaway": excerpt_text[:280],
-            "citation_url": doc["url"],
-            "badge": "Relevant Match"
-        })
+            results.append({
+                "id": idx + 1,
+                "title": doc["title"],
+                "source_key": source_label,
+                "authors": "Matched Source",
+                "year": 2026,
+                "journal": "Verified Result",
+                "takeaway": excerpt_text[:280],
+                "citation_url": doc["url"],
+                "badge": "Relevant Match"
+            })
 
-    ai_output = generate_gemini_analysis(raw_prompt, "\n\n".join(context_chunks))
-    ai_source_summaries = ai_output.get("source_summaries", {})
+        ai_output = generate_gemini_analysis(raw_prompt, "\n\n".join(context_chunks))
+        ai_source_summaries = ai_output.get("source_summaries", {})
 
-    for r in results:
-        if r["source_key"] in ai_source_summaries and ai_source_summaries[r["source_key"]]:
-            r["takeaway"] = ai_source_summaries[r["source_key"]]
+        for r in results:
+            if ai_source_summaries.get(r["source_key"]):
+                r["takeaway"] = ai_source_summaries[r["source_key"]]
+
+        cached = {
+            "ai_synthesis": ai_output.get("ai_synthesis", ""),
+            "solutions": ai_output.get("solutions", []),
+            "results": results
+        }
+        # only remember good answers (not errors)
+        if cached["solutions"]:
+            cache_set(cache_key, cached)
 
     return {
         "query": raw_prompt,
@@ -254,9 +342,7 @@ def search_ngo_data(payload: SearchQuery):
         "points_earned": 1,
         "total_points": new_points,
         "trees_planted": trees_planted,
-        "ai_synthesis": ai_output.get("ai_synthesis", ""),
-        "solutions": ai_output.get("solutions", []),
-        "results": results
+        **cached
     }
 
 
@@ -530,8 +616,9 @@ def home():
 # --- 3. TINYWEBDB ENDPOINTS FOR MIT APP INVENTOR ---
 @app.post("/storeval")
 def store_val(tag: str = Form(...), value: str = Form(...)):
-    database[tag] = value
-    save_database(database)
+    with db_lock:
+        database[tag] = value
+    save_database_in_background()
     return ["stored", tag, value]
 
 
