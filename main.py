@@ -489,7 +489,7 @@ def home():
     <main class="chat-shell" id="chatThread">
         <section class="welcome-card">
             <h1>AnInag AI Chatbot</h1>
-            <p>Enter a prompt to get a summary, <strong>4 tailored solutions</strong>, and only relevant sources (no empty "no results" links). Every prompt awards <strong>+1 point</strong> (<strong>6 points = 1 tree</strong>) synced with MIT App Inventor.</p>
+            <p>Enter a prompt to get a summary, <strong>4 tailored solutions</strong>, and each source is carefully selected to ensure credibility. Every prompt awards <strong>+1 point</strong> (<strong>6 points = 1 tree</strong>) synced with MIT App Inventor.</p>
         </section>
     </main>
 
