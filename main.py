@@ -90,43 +90,43 @@ class SearchQuery(BaseModel):
     sources: Optional[List[str]] = None
 
 
-def generate_four_solutions(topic: str) -> List[Dict[str, str]]:
-    clean_topic = topic.strip() if topic.strip() else "public accountability"
+def build_four_solutions(prompt_text: str) -> List[Dict[str, str]]:
+    topic = prompt_text.strip() if prompt_text.strip() else "public service and transparency"
     return [
         {
             "number": "Solution 1",
-            "title": "Policy & Legislative Alignment",
-            "approach": "Regulatory & Mandate Review",
-            "detail": (
-                f"Audit existing Republic Acts, executive issuances, and pending bills related to '{clean_topic}' "
-                f"to identify gaps in enforcement, ambiguous mandates, or outdated guidelines that can be strengthened through formal policy recommendations."
+            "title": "Legal & Policy Framework Solution",
+            "focus": "Statutory & Regulatory Alignment",
+            "description": (
+                f"Review existing laws, executive orders, and proposed bills around '{topic}' "
+                f"to close policy gaps, clarify agency responsibilities, and establish enforceable standards."
             )
         },
         {
             "number": "Solution 2",
-            "title": "Financial & Audit Transparency Check",
-            "approach": "COA & Budget Accountability",
-            "detail": (
-                f"Cross-check budget allocations, disbursement records, and documentary requirements tied to '{clean_topic}' "
-                f"against Commission on Audit (COA) standards to flag missing liquidation reports, overlapping funds, or procurement bottlenecks."
+            "title": "Budget & Audit Oversight Solution",
+            "focus": "Fund Tracking & COA Compliance",
+            "description": (
+                f"Map funding sources, procurement steps, and required documentation for '{topic}' "
+                f"so spending can be audited clearly and bottlenecks or unliquidated items are caught early."
             )
         },
         {
             "number": "Solution 3",
-            "title": "Community & Stakeholder Co-Design",
-            "approach": "Grassroots & Civic Participation",
-            "detail": (
-                f"Engage affected communities, local civil society groups, and frontline workers impacted by '{clean_topic}' "
-                f"through consultations and plain-language briefs so interventions address real on-the-ground needs rather than top-down assumptions."
+            "title": "Operational & Community Co-Design Solution",
+            "focus": "Practical Implementation on the Ground",
+            "description": (
+                f"Design practical workflows for '{topic}' together with local communities, workers, and partner NGOs "
+                f"so solutions fit real daily conditions and can be adopted without friction."
             )
         },
         {
             "number": "Solution 4",
-            "title": "Open Data & Public Monitoring Tracker",
-            "approach": "Continuous Verification & Reporting",
-            "detail": (
-                f"Establish a structured tracking checklist and public summary of milestones, agencies responsible, and timelines for '{clean_topic}' "
-                f"so citizens and researchers can monitor progress over time and follow up on unresolved commitments."
+            "title": "Public Monitoring & Feedback Solution",
+            "focus": "Ongoing Accountability & Reporting",
+            "description": (
+                f"Set up clear milestones, public status updates, and reporting checkpoints for '{topic}' "
+                f"so stakeholders can verify outcomes and sustain action over time."
             )
         }
     ]
@@ -161,10 +161,11 @@ def fetch_ecosia_ngo_results(query: str) -> List[Dict]:
     return extracted_results
 
 
-# --- 1. CHAT PROMPT, 4 SOLUTIONS & POINT REWARD ROUTE ---
+# --- 1. CHAT SEARCH, SOURCE SUMMARIES, 4 SOLUTIONS & POINT REWARD ROUTE ---
 @app.post("/api/search")
 def search_ngo_data(payload: SearchQuery):
-    user_query = payload.query.strip().lower()
+    raw_prompt = payload.query.strip()
+    user_query = raw_prompt.lower()
     user_id = payload.user_id.strip() if payload.user_id else "user_001"
     encoded_user_query = urllib.parse.quote(user_query)
 
@@ -175,23 +176,23 @@ def search_ngo_data(payload: SearchQuery):
     save_database(database)
 
     trees_planted = new_points // 6  # 6 points = 1 tree calculation
-    solutions = generate_four_solutions(payload.query)
+    solutions = build_four_solutions(raw_prompt)
 
     results = []
     for idx, repo in enumerate(GOVERNMENT_NGO_REPOSITORIES):
         direct_deep_link = repo["search_url_template"].format(query=encoded_user_query)
         document_gist = (
-            f"Summary & Context: Within {repo['name']}, records concerning '{user_query}' "
-            f"outline {repo['document_summary'].lower()} Useful for checking statutory authority, "
-            f"procedures, and official records related to your prompt."
+            f"Document Gist & Content Overview: Within the {repo['name']} repository, records and guidelines concerning '{user_query}' "
+            f"outline {repo['document_summary'].lower()} This archive provides direct statutory authority, compliance frameworks, "
+            f"and official documentation relevant to your search."
         )
 
         results.append({
             "id": idx + 1,
-            "title": f"{repo['name']}: Records for '{user_query}'",
+            "title": f"{repo['name']}: Targeted Records for '{user_query}'",
             "authors": repo["category"],
             "year": 2026,
-            "sample_size": "Target Repository Match",
+            "sample_size": "Complete Target Repository Match",
             "journal": repo["name"],
             "takeaway": document_gist,
             "consensus_score": 96 - (idx * 2),
@@ -208,16 +209,19 @@ def search_ngo_data(payload: SearchQuery):
             "year": 2026,
             "sample_size": "Highlighted Passage",
             "journal": "Open Web Search Index",
-            "takeaway": f"Summary & Context: Live web source data highlights background context and public records regarding '{user_query}'.",
+            "takeaway": (
+                f"Document Gist & Content Overview: Live web source data for '{user_query}' details specific operational context, "
+                f"background data, and public disclosures relevant to your prompt."
+            ),
             "consensus_score": 85 - (idx * 4),
             "citation_url": web_item["url"],
             "badge": "Live Text-Fragment Link"
         })
 
     ai_synthesis_text = (
-        f"Summary for '{payload.query.strip()}': Across the Official Gazette, LawPhil, House Legislative Documents, "
-        f"Senate Archives, PPP Database, and COA Guidelines, addressing this prompt requires pairing legal and audit "
-        f"accountability with practical community execution and ongoing progress tracking."
+        f"AnInag Comprehensive AI Synthesis: Evaluating across all registered official target repositories "
+        f"(Official Gazette, LawPhil, House Legislative Documents, Senate Archives, PPP Database, and COA Audit Guidelines), "
+        f"prompts regarding '{user_query}' intersect with multiple legal mandates, financial reporting structures, and compliance protocols."
     )
 
     return {
@@ -231,7 +235,7 @@ def search_ngo_data(payload: SearchQuery):
         "consensus_summary": {
             "affirmative_percentage": 95,
             "verdict": f"Evaluated Across All {len(GOVERNMENT_NGO_REPOSITORIES)} Target Repositories",
-            "overview": f"+1 point awarded to '{user_id}'. Total Points: {new_points} | Trees Planted: {trees_planted}."
+            "overview": f"1 point awarded to '{user_id}'. Total Points: {new_points} | Trees Planted: {trees_planted}."
         },
         "results": results
     }
@@ -244,7 +248,7 @@ def get_user_points(user_id: str):
     return {"user_id": user_id, "points": points, "trees": trees}
 
 
-# --- 2. CONVERSATIONAL CHAT FRONTEND ---
+# --- 2. CHATBOT FRONTEND WITH SOURCE SUMMARIES + 4 SOLUTIONS ---
 @app.get("/", response_class=HTMLResponse)
 def home():
     return """<!DOCTYPE html>
@@ -252,7 +256,7 @@ def home():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AnInag Chat - Research & 4-Solution Assistant</title>
+    <title>AnInag Chat - Research Summaries & 4 Solutions</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -340,7 +344,7 @@ def home():
         }
 
         .chat-shell {
-            max-width: 920px;
+            max-width: 940px;
             width: 100%;
             margin: 0 auto;
             padding: 20px 18px 130px;
@@ -389,7 +393,7 @@ def home():
         .message-row {
             display: flex;
             flex-direction: column;
-            gap: 8px;
+            gap: 6px;
         }
         .user-bubble {
             align-self: flex-end;
@@ -400,7 +404,6 @@ def home():
             max-width: 78%;
             font-size: 0.95rem;
             line-height: 1.45;
-            box-shadow: 0 2px 8px rgba(91, 58, 41, 0.08);
         }
         .user-meta {
             align-self: flex-end;
@@ -412,11 +415,11 @@ def home():
             background: var(--card-bg);
             border: 1px solid var(--border);
             border-radius: 16px;
-            padding: 20px;
+            padding: 22px;
             box-shadow: 0 2px 10px rgba(91, 58, 41, 0.04);
             display: flex;
             flex-direction: column;
-            gap: 16px;
+            gap: 18px;
         }
         .bot-header {
             display: flex;
@@ -432,7 +435,6 @@ def home():
             font-size: 0.9rem;
             color: var(--brand);
             text-transform: uppercase;
-            letter-spacing: 0.03em;
         }
         .reward-pill {
             background: var(--bg);
@@ -444,14 +446,21 @@ def home():
             color: var(--primary);
         }
 
-        .summary-box {
-            background: var(--bg);
-            border-left: 4px solid var(--brand);
+        .section-heading {
+            font-size: 0.85rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+        }
+
+        .synthesis-box {
+            border: 2px solid var(--accent-cream);
+            border-radius: 12px;
             padding: 14px 16px;
-            border-radius: 0 10px 10px 0;
+            background: #FCFBF5;
             font-size: 0.94rem;
             line-height: 1.55;
-            color: var(--primary);
         }
 
         .solutions-grid {
@@ -460,7 +469,7 @@ def home():
             gap: 12px;
         }
         .solution-card {
-            background: #FCFBF5;
+            background: var(--bg);
             border: 1px solid var(--border);
             border-radius: 12px;
             padding: 14px;
@@ -468,11 +477,10 @@ def home():
             flex-direction: column;
             gap: 6px;
         }
-        .solution-tag {
-            display: inline-block;
+        .solution-badge {
             align-self: flex-start;
-            background: var(--badge-bg);
-            color: var(--primary);
+            background: var(--brand);
+            color: #fff;
             font-size: 0.72rem;
             font-weight: 700;
             padding: 2px 8px;
@@ -483,42 +491,48 @@ def home():
             font-weight: 700;
             color: var(--primary);
         }
-        .solution-approach {
+        .solution-focus {
             font-size: 0.78rem;
             font-weight: 600;
             color: var(--text-muted);
         }
-        .solution-detail {
+        .solution-desc {
             font-size: 0.87rem;
-            line-height: 1.48;
+            line-height: 1.5;
             color: var(--primary);
         }
 
-        details.sources-drawer {
+        .source-card {
+            background: var(--card-bg);
             border: 1px solid var(--border);
             border-radius: 12px;
-            padding: 12px 16px;
-            background: var(--bg);
+            padding: 16px;
+            margin-bottom: 12px;
         }
-        details.sources-drawer summary {
-            cursor: pointer;
-            font-weight: 700;
-            font-size: 0.86rem;
+        .source-badge {
+            background: var(--badge-bg);
             color: var(--primary);
-        }
-        .source-item {
-            margin-top: 10px;
-            padding-top: 10px;
-            border-top: 1px solid var(--border);
-            font-size: 0.85rem;
-        }
-        .source-item a {
-            color: var(--brand-dark);
+            padding: 2px 8px;
+            border-radius: 4px;
             font-weight: 600;
-            text-decoration: none;
+            font-size: 0.78rem;
         }
-        .source-item a:hover {
+        .takeaway-box {
+            background: var(--bg);
+            border-left: 3px solid var(--brand);
+            padding: 12px 14px;
+            margin: 10px 0;
+            border-radius: 0 8px 8px 0;
+        }
+        .source-link {
+            color: var(--brand);
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 0.88rem;
+        }
+        .source-link:hover {
             text-decoration: underline;
+            color: var(--brand-dark);
         }
 
         .composer-bar {
@@ -532,7 +546,7 @@ def home():
             z-index: 20;
         }
         .composer-inner {
-            max-width: 920px;
+            max-width: 940px;
             margin: 0 auto;
             display: flex;
             gap: 10px;
@@ -570,7 +584,7 @@ def home():
 </head>
 <body>
     <header>
-        <div class="logo">AnInag Chat <span>4 Solutions + Points</span></div>
+        <div class="logo">AnInag Chat <span>Summaries + 4 Solutions</span></div>
         <div class="header-controls">
             <div class="user-id-group">
                 <label for="userIdInput">User ID:</label>
@@ -583,12 +597,12 @@ def home():
 
     <main class="chat-shell" id="chatThread">
         <section class="welcome-card">
-            <h1>Ask a research or civic prompt</h1>
-            <p>Each prompt summarizes relevant public/NGO context, proposes <strong>4 distinct solutions</strong>, awards <strong>+1 point</strong> (every <strong>6 points = 1 tree</strong>), and syncs with your MIT App Inventor screen.</p>
+            <h1>AnInag Research & Solution Chat</h1>
+            <p>Enter a prompt to get prompt-aligned source summaries, <strong>4 distinct solutions</strong>, and <strong>+1 point</strong> per prompt (<strong>6 points = 1 tree</strong>) synced with your MIT App Inventor app.</p>
             <div class="repo-chips">
                 <a class="repo-chip" href="https://www.officialgazette.gov.ph/" target="_blank">Official Gazette ↗</a>
-                <a class="repo-chip" href="https://lawphil.net/" target="_blank">LawPhil ↗</a>
-                <a class="repo-chip" href="https://www.congress.gov.ph/" target="_blank">House Docs ↗</a>
+                <a class="repo-chip" href="https://lawphil.net/" target="_blank">LawPhil Archive ↗</a>
+                <a class="repo-chip" href="https://www.congress.gov.ph/" target="_blank">House Documents ↗</a>
                 <a class="repo-chip" href="https://ldr.senate.gov.ph/" target="_blank">Senate Archive ↗</a>
                 <a class="repo-chip" href="https://ppp.gov.ph/" target="_blank">PPP Database ↗</a>
                 <a class="repo-chip" href="https://www.coa.gov.ph/" target="_blank">COA Audit ↗</a>
@@ -602,7 +616,7 @@ def home():
                 type="text"
                 id="searchInput"
                 class="prompt-input"
-                placeholder="Type a prompt (e.g., how to improve public market waste & budget transparency)..."
+                placeholder="Enter your prompt (e.g., confidential funds or public market waste management)..."
                 onkeydown="if (event.key === 'Enter') executeSearch()"
             >
             <button class="send-btn" onclick="executeSearch()">Send (+1 Pt)</button>
@@ -614,6 +628,15 @@ def home():
             const div = document.createElement('div');
             div.textContent = text || '';
             return div.innerHTML;
+        }
+
+        function fallbackSolutions(query) {
+            return [
+                { number: "Solution 1", title: "Legal & Policy Framework Solution", focus: "Statutory & Regulatory Alignment", description: `Review laws, executive orders, and bills around '${query}' to clarify mandates and close policy gaps.` },
+                { number: "Solution 2", title: "Budget & Audit Oversight Solution", focus: "Fund Tracking & COA Compliance", description: `Check fund allocations, disbursements, and COA documentary requirements for '${query}'.` },
+                { number: "Solution 3", title: "Operational & Community Co-Design Solution", focus: "Practical Implementation on the Ground", description: `Co-design workflows for '${query}' with affected communities, workers, and local partners.` },
+                { number: "Solution 4", title: "Public Monitoring & Feedback Solution", focus: "Ongoing Accountability & Reporting", description: `Track milestones, agency follow-ups, and public updates for '${query}' over time.` }
+            ];
         }
 
         async function fetchUserPoints() {
@@ -639,14 +662,14 @@ def home():
             userRow.className = 'message-row';
             userRow.innerHTML = `
                 <div class="user-bubble">${escapeHtml(query)}</div>
-                <div class="user-meta">Sent by ${escapeHtml(userId)}</div>
+                <div class="user-meta">Prompt by ${escapeHtml(userId)}</div>
             `;
             thread.appendChild(userRow);
             inputEl.value = '';
 
             const loadingCard = document.createElement('div');
             loadingCard.className = 'bot-card';
-            loadingCard.innerHTML = `<div style="color:var(--brand); font-weight:600; font-size:0.9rem;">Synthesizing summary, generating 4 solutions, and syncing points...</div>`;
+            loadingCard.innerHTML = `<div style="color:var(--brand); font-weight:600;">Generating prompt-aligned source summaries, 4 solutions, and syncing points...</div>`;
             thread.appendChild(loadingCard);
             loadingCard.scrollIntoView({ behavior: 'smooth', block: 'end' });
 
@@ -660,42 +683,55 @@ def home():
 
                 document.getElementById('headerPointsBadge').innerText = `⭐ Points: ${data.total_points} | 🌳 Trees: ${data.trees_planted}`;
 
-                const solutionsHtml = (data.solutions || []).map(sol => `
+                const solutionsList = (Array.isArray(data.solutions) && data.solutions.length > 0)
+                    ? data.solutions
+                    : fallbackSolutions(query);
+
+                const solutionsHtml = solutionsList.map(sol => `
                     <div class="solution-card">
-                        <span class="solution-tag">${escapeHtml(sol.number)}</span>
+                        <span class="solution-badge">${escapeHtml(sol.number)}</span>
                         <div class="solution-title">${escapeHtml(sol.title)}</div>
-                        <div class="solution-approach">${escapeHtml(sol.approach)}</div>
-                        <div class="solution-detail">${escapeHtml(sol.detail)}</div>
+                        <div class="solution-focus">${escapeHtml(sol.focus)}</div>
+                        <div class="solution-desc">${escapeHtml(sol.description)}</div>
                     </div>
                 `).join('');
 
-                const sourcesHtml = (data.results || []).slice(0, 6).map(res => `
-                    <div class="source-item">
-                        <div><strong>${escapeHtml(res.title)}</strong> <span style="color:var(--text-muted);">(${escapeHtml(res.authors)})</span></div>
-                        <div style="margin:4px 0; color:var(--primary);">${escapeHtml(res.takeaway)}</div>
-                        <a href="${escapeHtml(res.citation_url)}" target="_blank">Open Repository Search ↗</a>
+                const sourcesHtml = (data.results || []).map(res => `
+                    <div class="source-card">
+                        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
+                            <span class="source-badge">${escapeHtml(res.badge)}</span>
+                            <span style="font-size:0.8rem; color:var(--text-muted);">${escapeHtml(res.authors)} • ${escapeHtml(res.year)}</span>
+                        </div>
+                        <h3 style="font-size:1.05rem; font-weight:600; color:var(--primary);">${escapeHtml(res.title)}</h3>
+                        <div class="takeaway-box">
+                            <div style="font-size:0.74rem; font-weight:700; color:var(--text-muted); text-transform:uppercase;">Document Gist & Summary</div>
+                            <div style="font-size:0.92rem; margin-top:4px; line-height:1.5; color:var(--primary);">${escapeHtml(res.takeaway)}</div>
+                        </div>
+                        <a href="${escapeHtml(res.citation_url)}" target="_blank" class="source-link">🔗 Open Target Document Match (${escapeHtml(res.journal)}) ↗</a>
                     </div>
                 `).join('');
 
                 loadingCard.innerHTML = `
                     <div class="bot-header">
-                        <div class="bot-title">AnInag Summary & 4 Proposed Solutions</div>
+                        <div class="bot-title">AnInag Synthesis, 4 Solutions & Source Summaries</div>
                         <div class="reward-pill">+1 Pt → Total: ${data.total_points} | 🌳 Trees: ${data.trees_planted}</div>
                     </div>
-                    <div class="summary-box">
-                        <strong>Summary:</strong> ${escapeHtml(data.ai_synthesis)}
+                    <div>
+                        <div class="section-heading">Overall Synthesis</div>
+                        <div class="synthesis-box">${escapeHtml(data.ai_synthesis)}</div>
                     </div>
-                    <div class="solutions-grid">
-                        ${solutionsHtml}
+                    <div>
+                        <div class="section-heading">4 Proposed Solutions</div>
+                        <div class="solutions-grid">${solutionsHtml}</div>
                     </div>
-                    <details class="sources-drawer">
-                        <summary>Repository Summaries & Links (${Math.min((data.results || []).length, 6)} sources)</summary>
+                    <div>
+                        <div class="section-heading">Source Summaries Aligned to Your Prompt</div>
                         ${sourcesHtml}
-                    </details>
+                    </div>
                 `;
                 loadingCard.scrollIntoView({ behavior: 'smooth', block: 'end' });
             } catch (err) {
-                loadingCard.innerHTML = `<div style="color:#8F4E3E; font-weight:600;">Could not complete prompt request. Check your backend connection.</div>`;
+                loadingCard.innerHTML = `<div style="color:#8F4E3E; font-weight:600;">Error processing prompt. Make sure your updated main.py is deployed and running.</div>`;
             }
         }
 
