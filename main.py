@@ -724,7 +724,7 @@ def home():
 
             const loadingCard = document.createElement('div');
             loadingCard.className = 'bot-card';
-            loadingCard.innerHTML = `<div style="color:var(--brand); font-weight:600;">Finding related articles and writing AI summaries...</div>`;
+            loadingCard.innerHTML = `<div style="color:var(--brand); font-weight:600;">AnInag Chatbot is thinking...</div>`;
             thread.appendChild(loadingCard);
             loadingCard.scrollIntoView({ behavior: 'smooth', block: 'end' });
 
