@@ -50,7 +50,7 @@ def is_relevant_to_query(query: str, title: str, text: str) -> bool:
 
 
 def fetch_page_excerpt(url: str, max_chars: int = 1200) -> str:
-    """Kumukuha ng maikling text mula sa link para i-summarize ng AI."""
+    """Fetches a short text excerpt from a page so AI can summarize it."""
     try:
         req = urllib.request.Request(
             url,
@@ -67,7 +67,7 @@ def fetch_page_excerpt(url: str, max_chars: int = 1200) -> str:
 
 
 def fetch_web_documents(query: str) -> List[Dict]:
-    """Kumukuha ng mga tugmang web sources at sinasala lang ang may match sa prompt."""
+    """Fetches web results and keeps only sources that match the user's prompt."""
     encoded_query = urllib.parse.quote(f"{query} (site:gov.ph OR site:org OR site:lawphil.net)")
     url = f"https://html.ecosia.org/search?q={encoded_query}"
 
@@ -117,10 +117,10 @@ def extract_json_object(text: str) -> dict:
 
 
 def generate_gemini_analysis(prompt: str, sources_context: str) -> dict:
-    """Gumagamit ng Gemini 3.8 Flash Interactions API para sa summary at 4 tailored solutions."""
+    """Uses Gemini 3.8 Flash Interactions API to summarize sources and generate 4 tailored solutions."""
     if not ai_client:
         return {
-            "ai_synthesis": "Walang GEMINI_API_KEY sa Render environment variables.",
+            "ai_synthesis": "GEMINI_API_KEY is missing on Render. Add GEMINI_API_KEY under Render -> Environment.",
             "source_summaries": {},
             "solutions": []
         }
@@ -128,49 +128,49 @@ def generate_gemini_analysis(prompt: str, sources_context: str) -> dict:
     context_section = (
         sources_context
         if sources_context.strip()
-        else "Walang nakuha o direktang tugmang external document excerpt para sa prompt na ito."
+        else "No direct matching external document excerpts were retrieved for this prompt."
     )
 
     ai_prompt = f"""
-Ikaw ay si AnInag, isang civic research at problem-solving assistant.
-Prompt ng user: "{prompt}"
+You are AnInag, a civic research and problem-solving assistant. Write all output in clear, natural English.
+User Prompt: "{prompt}"
 
-Mga nakuha at tugmang sources/excerpts:
+Matched Sources & Excerpts:
 {context_section}
 
-Magbalik ng VALID JSON lamang (walang ```json code fences) na may ganitong eksaktong istruktura:
+Return ONLY valid JSON (no ```json code fences) with this exact structure:
 {{
-  "overall_summary": "Malinaw at direktang buod na tugma sa prompt ng user batay lamang sa ibinigay na impormasyon.",
+  "overall_summary": "Clear, concise summary aligned to the User Prompt based on the provided information.",
   "source_summaries": [
     {{
-      "source_name": "Eksaktong source_name sa loob ng brackets sa itaas (kung mayroon)",
-      "summary": "Maikling buod ng source na ito na naka-angkop sa prompt."
+      "source_name": "Exact source_name inside brackets above (if any)",
+      "summary": "Concise prompt-aligned summary of this source."
     }}
   ],
   "solutions": [
     {{
       "number": "Solution 1",
-      "title": "Maikling pamagat ng solusyon",
-      "focus": "Pokus ng solusyon",
-      "description": "Kongkreto at praktikal na solusyon na direktang sumasagot sa prompt ng user."
+      "title": "Short solution title",
+      "focus": "Focus area",
+      "description": "Concrete, practical solution tailored to the User Prompt."
     }},
     {{
       "number": "Solution 2",
-      "title": "Maikling pamagat ng solusyon",
-      "focus": "Pokus ng solusyon",
-      "description": "Kongkreto at praktikal na solusyon na direktang sumasagot sa prompt ng user."
+      "title": "Short solution title",
+      "focus": "Focus area",
+      "description": "Concrete, practical solution tailored to the User Prompt."
     }},
     {{
       "number": "Solution 3",
-      "title": "Maikling pamagat ng solusyon",
-      "focus": "Pokus ng solusyon",
-      "description": "Kongkreto at praktikal na solusyon na direktang sumasagot sa prompt ng user."
+      "title": "Short solution title",
+      "focus": "Focus area",
+      "description": "Concrete, practical solution tailored to the User Prompt."
     }},
     {{
       "number": "Solution 4",
-      "title": "Maikling pamagat ng solusyon",
-      "focus": "Pokus ng solusyon",
-      "description": "Kongkreto at praktikal na solusyon na direktang sumasagot sa prompt ng user."
+      "title": "Short solution title",
+      "focus": "Focus area",
+      "description": "Concrete, practical solution tailored to the User Prompt."
     }}
   ]
 }}
@@ -211,7 +211,7 @@ def search_ngo_data(payload: SearchQuery):
     raw_prompt = payload.query.strip()
     user_id = payload.user_id.strip() if payload.user_id else "user_001"
 
-    # +1 point bawat prompt, 6 points = 1 tree
+    # +1 point per prompt, 6 points = 1 tree
     point_tag = f"points_{user_id}"
     current_points = int(database.get(point_tag, "0"))
     new_points = current_points + 1
@@ -226,7 +226,7 @@ def search_ngo_data(payload: SearchQuery):
 
     for idx, doc in enumerate(web_docs):
         source_label = f"{doc['title']} (Matched Source)"
-        excerpt_text = doc["excerpt"] if doc["excerpt"] else f"Tugmang resulta para sa '{raw_prompt}'."
+        excerpt_text = doc["excerpt"] if doc["excerpt"] else f"Matched result for '{raw_prompt}'."
         context_chunks.append(f"[{source_label}]\nURL: {doc['raw_url']}\nExcerpt: {excerpt_text}")
 
         results.append({
@@ -403,7 +403,7 @@ def home():
     <main class="chat-shell" id="chatThread">
         <section class="welcome-card">
             <h1>AnInag AI Chatbot</h1>
-            <p>Mag-type ng prompt para makakuha ng summary, <strong>4 tailored solutions</strong>, at tugmang sources lang (walang "no results" link). Every prompt gives <strong>+1 point</strong> (<strong>6 points = 1 tree</strong>) synced with MIT App Inventor.</p>
+            <p>Enter a prompt to get a summary, <strong>4 tailored solutions</strong>, and only relevant sources (no empty "no results" links). Every prompt awards <strong>+1 point</strong> (<strong>6 points = 1 tree</strong>) synced with MIT App Inventor.</p>
         </section>
     </main>
 
@@ -495,7 +495,7 @@ def home():
                             <a href="${escapeHtml(res.citation_url)}" target="_blank" class="source-link">🔗 Open Matched Source (${escapeHtml(res.journal)}) ↗</a>
                         </div>
                     `).join('')
-                    : `<div class="empty-sources-box">Walang direktang tugmang link na nakuha para sa prompt na ito, kaya walang ipinakitang walang-lamang source link.</div>`;
+                    : `<div class="empty-sources-box">No direct matching source links were found for this prompt, so no empty source links were displayed.</div>`;
 
                 loadingCard.innerHTML = `
                     <div class="bot-header">
