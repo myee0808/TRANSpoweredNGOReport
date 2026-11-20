@@ -90,44 +90,131 @@ class SearchQuery(BaseModel):
     sources: Optional[List[str]] = None
 
 
+STOP_WORDS = {
+    "the", "a", "an", "and", "or", "for", "to", "of", "in", "on", "at", "by",
+    "with", "from", "how", "what", "why", "when", "where", "who", "is", "are",
+    "was", "were", "be", "been", "being", "do", "does", "did", "can", "could",
+    "should", "would", "we", "i", "you", "they", "it", "this", "that", "about",
+    "into", "over", "under", "more", "less", "improve", "fix", "solve", "make"
+}
+
+
+def extract_focus_terms(text: str) -> List[str]:
+    words = re.findall(r"[a-zA-Z0-9]+", text.lower())
+    terms = [w for w in words if w not in STOP_WORDS and len(w) > 2]
+    seen = []
+    for t in terms:
+        if t not in seen:
+            seen.append(t)
+    return seen[:4]
+
+
 def build_four_solutions(prompt_text: str) -> List[Dict[str, str]]:
-    topic = prompt_text.strip() if prompt_text.strip() else "public service and transparency"
+    raw = prompt_text.strip() if prompt_text.strip() else "public accountability"
+    lower = raw.lower()
+    terms = extract_focus_terms(raw)
+    primary = terms[0] if terms else raw
+    secondary = terms[1] if len(terms) > 1 else "compliance"
+    tertiary = terms[2] if len(terms) > 2 else "public access"
+
+    # Detect domain cues so solutions fit the actual subject of the prompt
+    if any(k in lower for k in ["waste", "trash", "garbage", "sanitation", "drainage", "palengke", "market", "flood"]):
+        domain_label = "Sanitation, Market & Infrastructure"
+        sol_1 = (
+            f"Map collection routes, waste segregation points, and drainage bottlenecks around '{primary}' and '{secondary}' "
+            f"to establish clear daily schedules and designated drop-off rules."
+        )
+        sol_2 = (
+            f"Audit sanitation contracts, tipping/collection fees, and equipment spending tied to '{primary}' "
+            f"against COA rules to verify that funds match actual service delivery."
+        )
+        sol_3 = (
+            f"Run hands-on segregation and maintenance routines with vendors, haulers, and barangay staff handling '{primary}', "
+            f"using practical bins, schedules, and incentives that fit daily operations."
+        )
+        sol_4 = (
+            f"Publish a simple weekly status log tracking collection completion, {secondary} incidents, and resolved reports "
+            f"for '{raw}' so residents can verify follow-through."
+        )
+    elif any(k in lower for k in ["fund", "funds", "budget", "money", "audit", "corruption", "procurement", "confidential", "ghost"]):
+        domain_label = "Fiscal Oversight & Anti-Corruption"
+        sol_1 = (
+            f"Review authorizing laws, executive issuances, and procurement rules governing '{primary}' and '{secondary}' "
+            f"to pinpoint where discretion is too broad or reporting rules are unclear."
+        )
+        sol_2 = (
+            f"Cross-check line-item budgets, disbursement vouchers, liquidation reports, and {secondary} records for '{raw}' "
+            f"using COA documentary checklists to spot red flags."
+        )
+        sol_3 = (
+            f"Partner with civil society auditors, local watchdogs, and {tertiary} advocates to review '{primary}' disclosures "
+            f"and translate technical findings into plain-language alerts."
+        )
+        sol_4 = (
+            f"Track release dates, obligated vs. disbursed amounts, and audit findings on '{primary}' in a living ledger "
+            f"with clear follow-up triggers for unanswered items."
+        )
+    elif any(k in lower for k in ["health", "hospital", "clinic", "water", "heat", "air", "climate", "environment", "tree", "energy"]):
+        domain_label = "Public Health, Climate & Resource Resilience"
+        sol_1 = (
+            f"Examine health, environmental, and local ordinances affecting '{primary}' and '{secondary}' "
+            f"to set measurable safety thresholds, cooling/access standards, and agency duties."
+        )
+        sol_2 = (
+            f"Trace capital and operating funds allocated to '{primary}' and '{secondary}'—including supplies, maintenance, "
+            f"and emergency reserves—to verify equitable distribution."
+        )
+        sol_3 = (
+            f"Co-design low-cost, high-impact measures for '{raw}' with frontline workers and exposed communities "
+            f"(such as shade, clean water points, or rapid response workflows)."
+        )
+        sol_4 = (
+            f"Monitor key indicators for '{primary}' (such as service uptime, {secondary} conditions, and response times) "
+            f"and publish periodic progress summaries."
+        )
+    else:
+        domain_label = "Targeted Policy, Audit & Civic Action"
+        sol_1 = (
+            f"Identify the exact laws, rules, or agency mandates that govern '{primary}' and '{secondary}' "
+            f"and propose concrete rule changes where guidelines are missing or conflicting."
+        )
+        sol_2 = (
+            f"Inspect funding, procurement, and documentary requirements connected to '{raw}' "
+            f"to check whether allocated resources are actually reaching '{secondary}'."
+        )
+        sol_3 = (
+            f"Build a practical action plan for '{primary}' with the people directly affected and local {tertiary} groups, "
+            f"focusing on realistic first steps rather than broad statements."
+        )
+        sol_4 = (
+            f"Create a clear checkpoint tracker for '{raw}' listing concrete deliverables, responsible offices, "
+            f"and verification steps after the initial action."
+        )
+
     return [
         {
             "number": "Solution 1",
-            "title": "Legal & Policy Framework Solution",
-            "focus": "Statutory & Regulatory Alignment",
-            "description": (
-                f"Review existing laws, executive orders, and proposed bills around '{topic}' "
-                f"to close policy gaps, clarify agency responsibilities, and establish enforceable standards."
-            )
+            "title": f"Policy & Rule Adjustment ({domain_label})",
+            "focus": f"Mandates & Standards for '{primary}'",
+            "description": sol_1
         },
         {
             "number": "Solution 2",
-            "title": "Budget & Audit Oversight Solution",
-            "focus": "Fund Tracking & COA Compliance",
-            "description": (
-                f"Map funding sources, procurement steps, and required documentation for '{topic}' "
-                f"so spending can be audited clearly and bottlenecks or unliquidated items are caught early."
-            )
+            "title": "Targeted Budget & Audit Check",
+            "focus": f"Funds & Records on '{secondary}'",
+            "description": sol_2
         },
         {
             "number": "Solution 3",
-            "title": "Operational & Community Co-Design Solution",
-            "focus": "Practical Implementation on the Ground",
-            "description": (
-                f"Design practical workflows for '{topic}' together with local communities, workers, and partner NGOs "
-                f"so solutions fit real daily conditions and can be adopted without friction."
-            )
+            "title": "On-the-Ground Execution Plan",
+            "focus": f"Practical Rollout for '{raw}'",
+            "description": sol_3
         },
         {
             "number": "Solution 4",
-            "title": "Public Monitoring & Feedback Solution",
-            "focus": "Ongoing Accountability & Reporting",
-            "description": (
-                f"Set up clear milestones, public status updates, and reporting checkpoints for '{topic}' "
-                f"so stakeholders can verify outcomes and sustain action over time."
-            )
+            "title": "Milestone & Accountability Tracker",
+            "focus": f"Ongoing Verification of '{primary}'",
+            "description": sol_4
         }
     ]
 
