@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.gzip import GZipMiddleware
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FutureTimeout
 from typing import Dict, List, Optional
 from pydantic import BaseModel
 from google import genai
@@ -34,7 +34,19 @@ def get_ai_client():
     if _ai_client is None and GEMINI_API_KEY:
         with _ai_client_lock:
             if _ai_client is None:
-                _ai_client = genai.Client(api_key=GEMINI_API_KEY)
+                # FIX SLOW: turn off the add-on's hidden automatic retries.
+                # Those retries made one busy model wait 60+ seconds. AnInag
+                # switches to a backup model itself, which is much faster.
+                try:
+                    from google.genai import types as genai_types
+                    _ai_client = genai.Client(
+                        api_key=GEMINI_API_KEY,
+                        http_options=genai_types.HttpOptions(
+                            retry_options=genai_types.HttpRetryOptions(attempts=1),
+                        ),
+                    )
+                except Exception:
+                    _ai_client = genai.Client(api_key=GEMINI_API_KEY)
     return _ai_client
 
 HEADERS = {
@@ -68,7 +80,7 @@ SAVE_POOL = ThreadPoolExecutor(max_workers=1)
 
 # FIX 502: Gemini must answer within this many seconds, or we stop waiting.
 # (Render cuts off requests that take too long, which shows up as "HTTP 502".)
-GEMINI_TIMEOUT_SECONDS = 20
+GEMINI_TIMEOUT_SECONDS = 18
 
 # FIX "503 high demand": if one Gemini model is too busy, AnInag automatically
 # tries the next one in this list. First = your main model.
@@ -83,7 +95,7 @@ GEMINI_MODELS = [
 # models Google said "not found / no longer available" for; skipped until the server restarts
 _dead_models = set()
 # Stop trying other models after this many seconds in total (keeps Render from cutting us off)
-GEMINI_TOTAL_BUDGET_SECONDS = 45
+GEMINI_TOTAL_BUDGET_SECONDS = 40
 # remembers which model worked last, so busy models are skipped for a few minutes
 _last_good_model = {"name": None, "until": 0.0}
 _model_lock = threading.Lock()
@@ -97,6 +109,8 @@ GEMINI_THINKING_LEVEL = "low"
 # Set to False if you hit Gemini's "too many requests" limit.
 PARALLEL_AI_CALLS = True
 AI_POOL = ThreadPoolExecutor(max_workers=8)
+# runs each Gemini request with a hard stopwatch (see ask_gemini_json)
+GEMINI_CALL_POOL = ThreadPoolExecutor(max_workers=16)
 
 # THINK FASTER: the 6 approved pages are read once and kept in memory,
 # then refreshed in the background every 30 minutes, so prompts never wait on them.
@@ -376,13 +390,21 @@ def ask_gemini_json(ai_prompt: str, max_tokens: int) -> dict:
             if GEMINI_THINKING_LEVEL in ("low", "medium", "high"):
                 gen_config["thinking_level"] = GEMINI_THINKING_LEVEL
 
-            interaction = get_ai_client().interactions.create(
+            per_call = max(4, min(GEMINI_TIMEOUT_SECONDS, remaining))
+            # FIX SLOW: hard stopwatch. Even if Google or the add-on keeps
+            # waiting, AnInag stops after per_call seconds and moves on.
+            future = GEMINI_CALL_POOL.submit(
+                get_ai_client().interactions.create,
                 model=model_name,
                 input=ai_prompt,
                 generation_config=gen_config,
                 store=False,
-                timeout=max(4, min(GEMINI_TIMEOUT_SECONDS, remaining)),
+                timeout=per_call,
             )
+            try:
+                interaction = future.result(timeout=per_call + 1)
+            except FutureTimeout:
+                raise TimeoutError(f"{model_name} timed out after {per_call:.0f}s")
             raw_output = extract_text_from_interaction(interaction)
             data = extract_json_object(raw_output)
             if model_name != GEMINI_MODELS[0]:
@@ -403,7 +425,7 @@ def ask_gemini_json(ai_prompt: str, max_tokens: int) -> dict:
                 continue
             if not is_busy_error(e):
                 raise
-            time.sleep(1.0)
+            time.sleep(0.3)
     raise GeminiBusyError(str(last_error) if last_error else "no model answered in time")
 
 def build_gemini_gen_config(max_tokens: int) -> dict:
