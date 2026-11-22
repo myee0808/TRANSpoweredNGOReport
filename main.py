@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Form
+from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.gzip import GZipMiddleware
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -561,7 +561,7 @@ def home():
     <main class="chat-shell" id="chatThread">
         <section class="welcome-card">
             <h1>AnInag AI Chatbot</h1>
-            <p>Enter a prompt to get a summary, <strong>4 tailored solutions</strong>, and insights pulled strictly from your <strong>6 approved official links</strong>. Every prompt awards <strong>+1 point</strong> (<strong>6 points = 1 tree</strong>) synced with MIT App Inventor.</p>
+            <p>Enter a prompt to get a summary, <strong>4 tailored solutions</strong>, and insights pulled strictly from your <strong>6 approved official links</strong>. Every prompt awards <strong>+1 point</strong> (<strong>6 points = 1 tree</strong>).</p>
         </section>
     </main>
 
@@ -736,18 +736,3 @@ def home():
     </script>
 </body>
 </html>"""
-
-
-# --- 3. TINYWEBDB ENDPOINTS FOR MIT APP INVENTOR ---
-@app.post("/storeval")
-def store_val(tag: str = Form(...), value: str = Form(...)):
-    with db_lock:
-        database[tag] = value
-    save_database_in_background()
-    return ["stored", tag, value]
-
-
-@app.post("/getvalue")
-def get_val(tag: str = Form(...)):
-    value = database.get(tag, "0")
-    return [tag, value]
