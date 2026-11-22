@@ -444,8 +444,6 @@ Return ONLY valid JSON (no ```json code fences) with this exact structure:
         }
 
 
-
-
 def save_database_in_background():
     # SPEED: don't make the user wait for the disk write
     FETCH_POOL.submit(save_database, database)
@@ -557,7 +555,7 @@ def home():
             --accent-cream: #D9CBAE;
             --badge-bg: #E4CDAF;
         }
-        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
         body { background-color: var(--bg); color: var(--text-main); min-height: 100vh; display: flex; flex-direction: column; }
         header {
             background: var(--card-bg); border-bottom: 2px solid var(--border);
@@ -570,7 +568,7 @@ def home():
         .user-id-group { display: flex; align-items: center; gap: 6px; font-size: 0.82rem; color: var(--text-muted); }
         .user-id-input {
             border: 1px solid var(--border); background: var(--bg); padding: 5px 10px;
-            border-radius: 8px; outline: none; font-weight: 600; color: var(--primary); width: 110px;
+            border-radius: 8px; outline: none; font-weight: 600; color: var(--primary); width: 130px;
         }
         .user-points-badge {
             background: var(--accent-cream); border: 1px solid var(--border); color: var(--primary);
@@ -660,7 +658,7 @@ def home():
         <div class="header-controls">
             <div class="user-id-group">
                 <label for="userIdInput">User ID:</label>
-                <input type="text" id="userIdInput" class="user-id-input" value="user_001" onchange="fetchUserPoints()">
+                <input type="text" id="userIdInput" class="user-id-input" value="user_001" onchange="onUserIdChanged()">
             </div>
             <div class="user-points-badge" id="headerPointsBadge">⭐ Points: 0 | 🌳 Trees: 0</div>
             <a href="/docs" style="color:var(--text-muted); text-decoration:none; font-size:0.85rem; font-weight:600;">API Docs</a>
@@ -692,6 +690,36 @@ def home():
             const div = document.createElement('div');
             div.textContent = text || '';
             return div.innerHTML;
+        }
+
+        function initUserFromQuery() {
+            const params = new URLSearchParams(window.location.search);
+            const queryUserId = (params.get("user_id") || "").trim();
+            const inputEl = document.getElementById("userIdInput");
+
+            if (queryUserId && inputEl) {
+                inputEl.value = queryUserId;
+                try {
+                    localStorage.setItem("aninag_user_id", queryUserId);
+                } catch (e) {}
+            } else if (inputEl) {
+                try {
+                    const savedId = localStorage.getItem("aninag_user_id");
+                    if (savedId) inputEl.value = savedId;
+                } catch (e) {}
+            }
+
+            fetchUserPoints();
+        }
+
+        function onUserIdChanged() {
+            const inputEl = document.getElementById("userIdInput");
+            const userId = (inputEl ? inputEl.value.trim() : "") || "user_001";
+            if (inputEl) inputEl.value = userId;
+            try {
+                localStorage.setItem("aninag_user_id", userId);
+            } catch (e) {}
+            fetchUserPoints();
         }
 
         async function fetchUserPoints() {
@@ -788,7 +816,7 @@ def home():
             }
         }
 
-        fetchUserPoints();
+        document.addEventListener("DOMContentLoaded", initUserFromQuery);
     </script>
 </body>
 </html>"""
