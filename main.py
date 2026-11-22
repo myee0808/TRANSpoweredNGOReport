@@ -102,7 +102,7 @@ def fetch_page_excerpt(url: str, max_chars: int = 1200) -> str:
     """Fetches a short text excerpt from a page so AI can summarize it."""
     try:
         req = urllib.request.Request(url, headers=HEADERS)
-        with urllib.request.urlopen(req, timeout=2.5) as resp:
+        with urllib.request.urlopen(req, timeout=2.2) as resp:
             raw_html = resp.read(MAX_PAGE_BYTES).decode("utf-8", errors="ignore")
             raw_html = RE_SCRIPT_STYLE.sub(" ", raw_html)
             text = RE_TAGS.sub(" ", raw_html)
@@ -156,13 +156,13 @@ def relevance_score(query: str, title: str, text: str) -> int:
     return sum(1 for w in words if w in haystack or (len(w) > 5 and w[:5] in haystack))
 
 
-def search_web(query: str, limit: int = 8) -> List[Dict]:
+def search_web(query: str, limit: int = 5) -> List[Dict]:
     """Returns [{url, title, snippet}] from DuckDuckGo (no API key needed)."""
     for template in SEARCH_URLS:
         url = template.format(q=urllib.parse.quote(query))
         try:
             req = urllib.request.Request(url, headers=HEADERS)
-            with urllib.request.urlopen(req, timeout=4) as response:
+            with urllib.request.urlopen(req, timeout=3.0) as response:
                 page = response.read().decode("utf-8", errors="ignore")
         except Exception:
             continue
@@ -196,7 +196,7 @@ API_HEADERS = {"User-Agent": "AnInag/1.0 (civic research chatbot)"}
 _web_search_paused_until = 0.0  # web search said "too many searches" -> rest it for a bit
 
 
-def get_json(url: str, timeout: float = 4):
+def get_json(url: str, timeout: float = 3.5):
     req = urllib.request.Request(url, headers=API_HEADERS)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8", errors="ignore"))
@@ -261,19 +261,19 @@ def fetch_web_documents(query: str) -> List[Dict]:
 
     # Search the web AND research papers at the same time
     use_web = time.time() >= _web_search_paused_until
-    web_future = FETCH_POOL.submit(search_web, query, 8) if use_web else None
+    web_future = FETCH_POOL.submit(search_web, query, 5) if use_web else None
     papers_future = FETCH_POOL.submit(search_research_papers, query, 3)
 
     web_items: List[Dict] = []
     if web_future:
         try:
-            web_items = web_future.result(timeout=6)
+            web_items = web_future.result(timeout=5)
         except Exception:
             web_items = []
         if not web_items:
             _web_search_paused_until = time.time() + 60  # probably "too many searches"
     try:
-        papers = papers_future.result(timeout=6)
+        papers = papers_future.result(timeout=5)
     except Exception:
         papers = []
 
@@ -282,9 +282,9 @@ def fetch_web_documents(query: str) -> List[Dict]:
 
     # Read the web pages AT THE SAME TIME (research papers already come with their abstract)
     if web_items:
-        futures = {FETCH_POOL.submit(fetch_page_excerpt, w["url"], 2000): w for w in web_items}
+        futures = {FETCH_POOL.submit(fetch_page_excerpt, w["url"], 1500): w for w in web_items}
         try:
-            for fut in as_completed(futures, timeout=3.5):
+            for fut in as_completed(futures, timeout=2.0):
                 futures[fut]["page_text"] = fut.result()
         except Exception:
             pass  # slow pages just use the search snippet
@@ -574,6 +574,22 @@ def home():
             background: var(--accent-cream); border: 1px solid var(--border); color: var(--primary);
             padding: 6px 14px; border-radius: 20px; font-weight: 700; font-size: 0.85rem;
         }
+        .aninag-menu-bar {
+            display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+            width: 100%; padding-top: 10px; border-top: 1px solid var(--border);
+        }
+        .tp-menu-link {
+            text-decoration: none; font-size: 0.78rem; font-weight: 600;
+            color: var(--text-main); background: var(--bg); border: 1px solid var(--border);
+            padding: 5px 11px; border-radius: 999px;
+            transition: background-color 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+        }
+        .tp-menu-link:hover, .tp-menu-link:focus-visible {
+            background: var(--brand); color: #FFFFFF; border-color: var(--brand); outline: none;
+        }
+        .tp-menu-link--account {
+            background: var(--accent-cream); border-color: var(--text-muted);
+        }
         .chat-shell {
             max-width: 940px; width: 100%; margin: 0 auto; padding: 20px 18px 130px;
             flex: 1; display: flex; flex-direction: column; gap: 18px;
@@ -654,15 +670,6 @@ def home():
 </head>
 <body>
     <header>
-
-    <nav class="aninag-menu-bar" aria-label="TRANSpowered Menu">
-  <a href="index.html" class="tp-menu-link" data-tp-target="index.html">Home</a>
-  <a href="condition.html" class="tp-menu-link" data-tp-target="condition.html">[01] Condition</a>
-  <a href="plant-trees.html" class="tp-menu-link" data-tp-target="plant-trees.html">[02] Plant Trees</a>
-  <a href="about-us.html" class="tp-menu-link" data-tp-target="about-us.html">[04] About Us</a>
-  <a href="progress-tracker.html" class="tp-menu-link" data-tp-target="progress-tracker.html">[05] Progress Tracker</a>
-  <a href="setup-account.html" class="tp-menu-link tp-menu-link--account" data-tp-target="setup-account.html">Set-Up Account</a>
-</nav>
         <div class="logo">AnInag AI Chat <span>4 Solutions</span></div>
         <div class="header-controls">
             <div class="user-id-group">
@@ -672,6 +679,14 @@ def home():
             <div class="user-points-badge" id="headerPointsBadge">⭐ Points: 0 | 🌳 Trees: 0</div>
             <a href="/docs" style="color:var(--text-muted); text-decoration:none; font-size:0.85rem; font-weight:600;">API Docs</a>
         </div>
+        <nav class="aninag-menu-bar" aria-label="TRANSpowered Menu">
+            <a href="https://YOUR-USERNAME.github.io/YOUR-TRANS-REPO/index.html" class="tp-menu-link" data-tp-path="index.html">Home</a>
+            <a href="https://YOUR-USERNAME.github.io/YOUR-TRANS-REPO/condition.html" class="tp-menu-link" data-tp-path="condition.html">[01] Condition</a>
+            <a href="https://YOUR-USERNAME.github.io/YOUR-TRANS-REPO/plant-trees.html" class="tp-menu-link" data-tp-path="plant-trees.html">[02] Plant Trees</a>
+            <a href="https://YOUR-USERNAME.github.io/YOUR-TRANS-REPO/about-us.html" class="tp-menu-link" data-tp-path="about-us.html">[04] About Us</a>
+            <a href="https://YOUR-USERNAME.github.io/YOUR-TRANS-REPO/progress-tracker.html" class="tp-menu-link" data-tp-path="progress-tracker.html">[05] Progress Tracker</a>
+            <a href="https://YOUR-USERNAME.github.io/YOUR-TRANS-REPO/setup-account.html" class="tp-menu-link tp-menu-link--account" data-tp-path="setup-account.html">Set-Up Account</a>
+        </nav>
     </header>
 
     <main class="chat-shell" id="chatThread">
@@ -701,6 +716,27 @@ def home():
             return div.innerHTML;
         }
 
+        function syncTranspoweredMenuLinks() {
+            const inputEl = document.getElementById('userIdInput');
+            const userId = (inputEl ? inputEl.value.trim() : '') || '';
+
+            document.querySelectorAll('.tp-menu-link').forEach((link) => {
+                const rawHref = link.getAttribute('href') || '';
+                if (!rawHref) return;
+                try {
+                    const url = new URL(rawHref);
+                    if (userId) {
+                        url.searchParams.set('user_id', userId);
+                    } else {
+                        url.searchParams.delete('user_id');
+                    }
+                    link.setAttribute('href', url.toString());
+                } catch (_) {
+                    // Leave href unchanged if invalid
+                }
+            });
+        }
+
         function initUserFromQuery() {
             const params = new URLSearchParams(window.location.search);
             const queryUserId = (params.get("user_id") || "").trim();
@@ -718,6 +754,7 @@ def home():
                 } catch (e) {}
             }
 
+            syncTranspoweredMenuLinks();
             fetchUserPoints();
         }
 
@@ -728,6 +765,7 @@ def home():
             try {
                 localStorage.setItem("aninag_user_id", userId);
             } catch (e) {}
+            syncTranspoweredMenuLinks();
             fetchUserPoints();
         }
 
