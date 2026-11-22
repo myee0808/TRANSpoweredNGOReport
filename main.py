@@ -59,10 +59,10 @@ GEMINI_TIMEOUT_SECONDS = 20
 # FIX "503 high demand": if one Gemini model is too busy, AnInag automatically
 # tries the next one in this list. First = your main model.
 GEMINI_MODELS = [
-    "gemini-3.8-flash",
-    "gemini-3-flash-preview",
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
+    "gemini-3-flash-preview",
+    "gemini-3.8-flash",
 ]
 # Stop trying other models after this many seconds in total (keeps Render from cutting us off)
 GEMINI_TOTAL_BUDGET_SECONDS = 45
@@ -72,7 +72,7 @@ _model_lock = threading.Lock()
 
 # THINK FASTER: "minimal" = Gemini thinks the least before answering (fastest).
 # Change to "low" if answers start feeling too shallow.
-GEMINI_THINKING_LEVEL = "minimal"
+GEMINI_THINKING_LEVEL = "low"
 
 # THINK FASTER: ask Gemini for the summaries and the 4 solutions at the SAME time
 # (2 smaller requests in parallel instead of 1 big one). Uses 2 Gemini requests per prompt.
@@ -345,13 +345,19 @@ def ask_gemini_json(ai_prompt: str, max_tokens: int) -> dict:
                 model=model_name,
                 input=ai_prompt,
                 generation_config={
-                    "thinking_level": GEMINI_THINKING_LEVEL,  # THINK FASTER
-                    "max_output_tokens": max_tokens,          # THINK FASTER: no rambling
-                    "temperature": 0.4,
-                },
-                store=False,
-                timeout=min(GEMINI_TIMEOUT_SECONDS, remaining),
-            )
+            gen_config = {
+            "max_output_tokens": max_tokens,
+            "temperature": 0.4,
+        }
+        if GEMINI_THINKING_LEVEL in ("low", "medium", "high"):
+            gen_config["thinking_level"] = GEMINI_THINKING_LEVEL
+
+        interaction = ai_client.interactions.create(
+            model=model_name,
+            input=ai_prompt,
+            generation_config=gen_config,
+            store=False,
+        )
             raw_output = getattr(interaction, "output_text", "") or ""
             data = extract_json_object(raw_output)
             if model_name != GEMINI_MODELS[0]:
