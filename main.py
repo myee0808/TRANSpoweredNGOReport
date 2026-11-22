@@ -372,8 +372,62 @@ def ask_gemini_json(ai_prompt: str, max_tokens: int) -> dict:
             time.sleep(0.4)
     raise GeminiBusyError(str(last_error) if last_error else "no model answered in time")
 
+def build_gemini_gen_config(max_tokens: int) -> dict:
+    cfg = {
+        "max_output_tokens": max_tokens,
+        "temperature": 0.4,
+    }
+    if GEMINI_THINKING_LEVEL in ("low", "medium", "high"):
+        cfg["thinking_level"] = GEMINI_THINKING_LEVEL
+    return cfg
+
+
+def call_interactions_safe(model_name: str, prompt: str, max_tokens: int):
+    cfg = build_gemini_gen_config(max_tokens)
+    try:
+        return ai_client.interactions.create(
+            model=model_name,
+            input=prompt,
+            generation_config=cfg,
+            store=False,
+        )
+    except TypeError:
+        # Fallback if this SDK version doesn't accept `store` or `generation_config`
+        try:
+            return ai_client.interactions.create(
+                model=model_name,
+                input=prompt,
+                generation_config=cfg,
+            )
+        except TypeError:
+            return ai_client.interactions.create(
+                model=model_name,
+                input=prompt,
+            )
+
+
+def extract_text_from_interaction(interaction) -> str:
+    text = getattr(interaction, "output_text", None)
+    if isinstance(text, str) and text.strip():
+        return text
+
+    outputs = getattr(interaction, "outputs", None)
+    if isinstance(outputs, list):
+        chunks = []
+        for item in outputs:
+            val = getattr(item, "text", None)
+            if isinstance(val, str) and val.strip():
+                chunks.append(val)
+            elif isinstance(item, dict) and isinstance(item.get("text"), str) and item["text"].strip():
+                chunks.append(item["text"])
+        if chunks:
+            return "\n".join(chunks)
+    return ""
+
+
+
+
 def generate_gemini_analysis(prompt: str, sources_context: str) -> dict:
-    """Summarizes the approved sources and writes 4 tailored solutions, as fast as possible."""
     if not ai_client:
         return {
             "ai_synthesis": "GEMINI_API_KEY is missing on Render. Add GEMINI_API_KEY under Render -> Environment.",
@@ -382,97 +436,98 @@ def generate_gemini_analysis(prompt: str, sources_context: str) -> dict:
         }
 
     context_section = (
-        sources_context
-        if sources_context.strip()
+        sources_context.strip()
+        if sources_context and sources_context.strip()
         else "No related records were found in the allowed official links for this prompt."
     )
 
-    base = f"""You are AnInag, a civic research and problem-solving assistant. Write in clear, natural English.
+    ai_prompt = f"""You are AnInag, a civic research and problem-solving assistant. Write in clear, natural English.
 User Prompt: "{prompt}"
 
 Allowed Official Sources (each starts with [Source N]):
 {context_section}
 
-Only use what the sources say. Do not invent facts or cite outside websites.
-"""
-    summary_prompt = base + f"""
-Write ONE summary for EVERY source above, using its exact number as "source_id".
-Return ONLY JSON in this shape:
-{SUMMARY_SHAPE}
-"""
-    solutions_prompt = base + f"""
-Write exactly 4 concrete, practical solutions tailored to the User Prompt.
-Return ONLY JSON in this shape:
-{SOLUTIONS_SHAPE}
-"""
-    both_prompt = base + f"""
-Write ONE summary for EVERY source above (using its exact number as "source_id"),
-then exactly 4 concrete, practical solutions tailored to the User Prompt.
-Return ONLY JSON with these keys: "overall_summary", "source_summaries", "solutions".
-Summaries shape: {SUMMARY_SHAPE}
-Solutions shape: {SOLUTIONS_SHAPE}
+Rules:
+- Only use what the sources say or what is directly shown in the source. Do not invent facts or cite outside websites.
+- Write a concise overall_summary aligned to the User Prompt.
+- Write ONE short summary for EVERY source listed above, using its exact number as "source_id".
+- Write 4 concrete, practical solutions tailored to the User Prompt.
+
+Return ONLY valid JSON (no ```json fences) with this exact structure:
+{{
+  "overall_summary": "2-3 sentence summary aligned to the User Prompt, based only on the sources.",
+  "source_summaries": [
+    {{
+      "source_id": 1,
+      "summary": "1-2 sentences: what the source says and how it relates to the User Prompt."
+    }}
+  ],
+  "solutions": [
+    {{
+      "number": "Solution 1",
+      "title": "Short title",
+      "focus": "Focus area",
+      "description": "1-2 practical sentences."
+    }},
+    {{
+      "number": "Solution 2",
+      "title": "Short title",
+      "focus": "Focus area",
+      "description": "1-2 practical sentences."
+    }},
+    {{
+      "number": "Solution 3",
+      "title": "Short title",
+      "focus": "Focus area",
+      "description": "1-2 practical sentences."
+    }},
+    {{
+      "number": "Solution 4",
+      "title": "Short title",
+      "focus": "Focus area",
+      "description": "1-2 practical sentences."
+    }}
+  ]
+}}
 """
 
     try:
-        if PARALLEL_AI_CALLS:
-            # THINK FASTER: both halves are written at the same time
-            f_sum = AI_POOL.submit(ask_gemini_json, summary_prompt, 900)
-            f_sol = AI_POOL.submit(ask_gemini_json, solutions_prompt, 700)
-            data = {}
-            errors = []
-            for fut in (f_sum, f_sol):
-                try:
-                    data.update(fut.result(timeout=GEMINI_TIMEOUT_SECONDS + 2))
-                except Exception as e:
-                    errors.append(e)
-            if errors and not data:
-                raise errors[0]
-            if errors:
-                print(f"[AnInag] one Gemini half failed: {errors[0]!r}", flush=True)
-        else:
-            data = ask_gemini_json(both_prompt, 1600)
+        data = ask_gemini_json(ai_prompt, max_tokens=1600)
 
         summary_map = {}
-        for item in data.get("source_summaries", []):
+        for item in data.get("source_summaries", []) or []:
+            if not isinstance(item, dict):
+                continue
             try:
                 source_id = int(str(item.get("source_id", "")).strip())
             except ValueError:
                 continue
             if item.get("summary"):
-                summary_map[source_id] = item["summary"]
+                summary_map[source_id] = str(item["summary"])
+
+        raw_solutions = data.get("solutions", []) or []
+        clean_solutions = [s for s in raw_solutions if isinstance(s, dict)][:4]
+
         return {
-            "ai_synthesis": data.get("overall_summary", ""),
+            "ai_synthesis": str(data.get("overall_summary", "")).strip() or "Summary generated from approved sources.",
             "source_summaries": summary_map,
-            "solutions": data.get("solutions", [])[:4]
+            "solutions": clean_solutions
         }
     except Exception as e:
-        # shows up in Render -> Logs so you can see what went wrong
-        print(f"[AnInag] Gemini error: {e!r}", flush=True)
+        err_detail = str(e).strip() or type(e).__name__
+        print(f"[AnInag] Gemini final error ({type(e).__name__}): {err_detail}", flush=True)
         if isinstance(e, GeminiBusyError):
-            friendly = ("AnInag's AI is very busy right now (Google's Gemini servers are overloaded). "
-                        "Please wait a minute and send your prompt again. Your sources are still listed below.")
+            friendly = (
+                "AnInag's AI is very busy right now (Google's Gemini servers are overloaded). "
+                "Please wait a minute and send your prompt again. Your sources are still listed below."
+            )
         else:
-            friendly = f"AI summarization error: {e}"
+            friendly = f"AI summarization error ({type(e).__name__}): {err_detail}"
         return {
             "ai_synthesis": friendly,
             "source_summaries": {},
             "solutions": []
         }
-    except Exception as e:
-     print(f"[AnInag] Gemini error: {type(e).__name__}: {e!r}", flush=True)
-     if isinstance(e, GeminiBusyError):
-         friendly = (
-             "AnInag's AI is very busy right now (Google's Gemini servers are overloaded). "
-             "Please wait a minute and send your prompt again. Your sources are still listed below."
-         )
-     else:
-         detail = str(e).strip() or type(e).__name__
-         friendly = f"AI summarization error ({type(e).__name__}): {detail}"
-     return {
-         "ai_synthesis": friendly,
-         "source_summaries": {},
-         "solutions": []
-     }
 
 def save_database_in_background():
     # SPEED: don't make the user wait for the disk write
@@ -513,67 +568,6 @@ def health_check():
     }
 
 
-def run_search(payload: SearchQuery):
-    raw_prompt = payload.query.strip()
-    user_id = payload.user_id.strip() if payload.user_id else "user_001"
-
-    # +1 point per prompt, 6 points = 1 tree
-    new_points = add_point(user_id)
-    trees_planted = new_points // 6
-
-    # SPEED: same prompt asked again recently? answer instantly from memory
-    cache_key = raw_prompt.lower()
-    cached = cache_get(cache_key)
-    if cached is None:
-        web_docs = fetch_web_documents(raw_prompt)
-
-        context_chunks = []
-        results = []
-
-        for idx, doc in enumerate(web_docs, start=1):
-            excerpt_text = doc["excerpt"] or doc["snippet"] or doc["title"]
-            context_chunks.append(
-                f"[Source {idx}] {doc['title']}\nURL: {doc['url']}\nWebsite: {doc['domain']}\nExcerpt: {excerpt_text}"
-            )
-
-            results.append({
-                "id": idx,
-                "title": doc["title"],
-                "authors": doc["domain"],
-                "year": doc["year"],
-                "journal": doc["domain"],
-                # shown until the AI summary replaces it
-                "takeaway": (doc["snippet"] or excerpt_text)[:280],
-                "ai_summarized": False,
-                "citation_url": doc["url"],
-                "badge": "Approved Source"
-            })
-
-        ai_output = generate_gemini_analysis(raw_prompt, "\n\n".join(context_chunks))
-        ai_source_summaries = ai_output.get("source_summaries", {})
-
-        for r in results:
-            if ai_source_summaries.get(r["id"]):
-                r["takeaway"] = ai_source_summaries[r["id"]]
-                r["ai_summarized"] = True
-
-        cached = {
-            "ai_synthesis": ai_output.get("ai_synthesis", ""),
-            "solutions": ai_output.get("solutions", []),
-            "results": results
-        }
-        # only remember good answers (not errors)
-        if cached["solutions"]:
-            cache_set(cache_key, cached)
-
-    return {
-        "query": raw_prompt,
-        "user_id": user_id,
-        "points_earned": 1,
-        "total_points": new_points,
-        "trees_planted": trees_planted,
-        **cached
-    }
 
 
 @app.get("/api/points/{user_id}")
