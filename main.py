@@ -366,12 +366,11 @@ def ask_gemini_json(ai_prompt: str, max_tokens: int) -> dict:
             return data
         except Exception as e:
             last_error = e
-            print(f"[AnInag] {model_name} failed: {str(e)[:200]}", flush=True)
+            print(f"[AnInag] {model_name} failed: {type(e).__name__}: {str(e)[:200]}", flush=True)
             if not is_busy_error(e):
-                raise  # real problem (bad key, bad request) -> show it
-            time.sleep(0.4)  # tiny pause before trying the next model
+                raise
+            time.sleep(0.4)
     raise GeminiBusyError(str(last_error) if last_error else "no model answered in time")
-
 
 def generate_gemini_analysis(prompt: str, sources_context: str) -> dict:
     """Summarizes the approved sources and writes 4 tailored solutions, as fast as possible."""
@@ -459,7 +458,21 @@ Solutions shape: {SOLUTIONS_SHAPE}
             "source_summaries": {},
             "solutions": []
         }
-
+    except Exception as e:
+     print(f"[AnInag] Gemini error: {type(e).__name__}: {e!r}", flush=True)
+     if isinstance(e, GeminiBusyError):
+         friendly = (
+             "AnInag's AI is very busy right now (Google's Gemini servers are overloaded). "
+             "Please wait a minute and send your prompt again. Your sources are still listed below."
+         )
+     else:
+         detail = str(e).strip() or type(e).__name__
+         friendly = f"AI summarization error ({type(e).__name__}): {detail}"
+     return {
+         "ai_synthesis": friendly,
+         "source_summaries": {},
+         "solutions": []
+     }
 
 def save_database_in_background():
     # SPEED: don't make the user wait for the disk write
