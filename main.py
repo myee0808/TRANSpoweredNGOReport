@@ -72,12 +72,16 @@ GEMINI_TIMEOUT_SECONDS = 20
 
 # FIX "503 high demand": if one Gemini model is too busy, AnInag automatically
 # tries the next one in this list. First = your main model.
+# FIX 404: Google retired gemini-2.5-flash, gemini-2.5-flash-lite and gemini-3-flash-preview
+# for new keys, so only current models are listed here.
 GEMINI_MODELS = [
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
-    "gemini-3-flash-preview",
     "gemini-3.8-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
 ]
+# models Google said "not found / no longer available" for; skipped until the server restarts
+_dead_models = set()
 # Stop trying other models after this many seconds in total (keeps Render from cutting us off)
 GEMINI_TOTAL_BUDGET_SECONDS = 45
 # remembers which model worked last, so busy models are skipped for a few minutes
@@ -343,9 +347,18 @@ def is_busy_error(e: Exception) -> bool:
 def models_to_try() -> List[str]:
     with _model_lock:
         good = _last_good_model["name"] if time.time() < _last_good_model["until"] else None
-    if good and good in GEMINI_MODELS:
-        return [good] + [m for m in GEMINI_MODELS if m != good]
-    return list(GEMINI_MODELS)
+        dead = set(_dead_models)
+    alive = [m for m in GEMINI_MODELS if m not in dead] or list(GEMINI_MODELS)
+    if good and good in alive:
+        alive = [good] + [m for m in alive if m != good]
+    # FIX 503: if every model is busy, try the list a second time (budget permitting)
+    return alive + alive
+
+
+def is_missing_model_error(e: Exception) -> bool:
+    code = getattr(e, "status_code", None) or getattr(e, "code", None)
+    text = f"{type(e).__name__} {e}".lower()
+    return code == 404 or "notfound" in text or "no longer available" in text or "not found" in text
 
 def ask_gemini_json(ai_prompt: str, max_tokens: int) -> dict:
     """Fast Gemini call that returns JSON. Switches to a backup model if one is busy."""
@@ -384,9 +397,13 @@ def ask_gemini_json(ai_prompt: str, max_tokens: int) -> dict:
         except Exception as e:
             last_error = e
             print(f"[AnInag] {model_name} failed: {type(e).__name__}: {str(e)[:200]}", flush=True)
+            if is_missing_model_error(e):
+                with _model_lock:
+                    _dead_models.add(model_name)
+                continue
             if not is_busy_error(e):
                 raise
-            time.sleep(0.4)
+            time.sleep(1.0)
     raise GeminiBusyError(str(last_error) if last_error else "no model answered in time")
 
 def build_gemini_gen_config(max_tokens: int) -> dict:
