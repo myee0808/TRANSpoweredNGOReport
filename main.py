@@ -49,8 +49,10 @@ RE_JSON_OBJ = re.compile(r"\{.*\}", re.S)
 # SPEED: one shared pool for fetching pages in parallel
 FETCH_POOL = ThreadPoolExecutor(max_workers=6)
 
-# SPEED: read enough of each allowed page to capture title and top content
-MAX_PAGE_BYTES = 200_000
+# SPEED: cap timeouts and bytes read so slow government sites don't stall requests
+FAST_PAGE_TIMEOUT = 1.6
+BATCH_WAIT_TIMEOUT = 1.8
+FAST_MAX_PAGE_BYTES = 80_000
 
 
 # --- PERSISTENT DISK STORAGE ---
@@ -140,59 +142,67 @@ def relevance_score(query: str, title: str, text: str) -> int:
     return sum(1 for w in words if w in haystack or (len(w) > 5 and w[:5] in haystack))
 
 
-def fetch_allowed_page(url: str, max_chars: int = 1800) -> Dict:
-    """Fetches ONLY from one of the pre-approved ALLOWED_URLS."""
+def build_fallback_source(url: str) -> Dict:
     domain = get_domain(url)
-    fallback_title = f"{domain} — {urllib.parse.urlparse(url).path.strip('/').replace('-', ' ').replace('/', ' / ') or 'Official Page'}"
+    path_label = (
+        urllib.parse.urlparse(url).path.strip("/").replace("-", " ").replace("/", " / ")
+        or "Official Page"
+    )
+    title = f"{domain} — {path_label}"
+    return {
+        "title": title,
+        "url": url,
+        "raw_url": url,
+        "domain": domain,
+        "kind": "allowed_source",
+        "year": 2026,
+        "trusted": True,
+        "snippet": f"Official source from {domain} ({url}).",
+        "excerpt": f"Official source from {domain}: {url}",
+    }
+
+
+def fetch_allowed_page(url: str, max_chars: int = 1200) -> Dict:
+    """Fetches ONLY from one of the pre-approved ALLOWED_URLS with a strict deadline."""
+    fallback_item = build_fallback_source(url)
     try:
         req = urllib.request.Request(url, headers=HEADERS)
-        with urllib.request.urlopen(req, timeout=3.5) as resp:
-            raw_html = resp.read(MAX_PAGE_BYTES).decode("utf-8", errors="ignore")
+        with urllib.request.urlopen(req, timeout=FAST_PAGE_TIMEOUT) as resp:
+            raw_html = resp.read(FAST_MAX_PAGE_BYTES).decode("utf-8", errors="ignore")
             title_match = RE_TITLE.search(raw_html)
-            page_title = clean_html_text(title_match.group(1)) if title_match else fallback_title
+            page_title = clean_html_text(title_match.group(1)) if title_match else fallback_item["title"]
             body_html = RE_SCRIPT_STYLE.sub(" ", raw_html)
             text = clean_html_text(body_html)
+            if not text:
+                return fallback_item
             return {
-                "title": page_title or fallback_title,
-                "url": url,
-                "raw_url": url,
-                "domain": domain,
-                "kind": "allowed_source",
-                "year": 2026,
-                "trusted": True,
-                "snippet": text[:300],
+                **fallback_item,
+                "title": page_title or fallback_item["title"],
+                "snippet": text[:250],
                 "excerpt": text[:max_chars],
             }
     except Exception:
-        return {
-            "title": fallback_title,
-            "url": url,
-            "raw_url": url,
-            "domain": domain,
-            "kind": "allowed_source",
-            "year": 2026,
-            "trusted": True,
-            "snippet": f"Official source from {domain} ({url}).",
-            "excerpt": f"Official source from {domain}: {url}",
-        }
+        return fallback_item
 
 
 def fetch_web_documents(query: str) -> List[Dict]:
-    """ONLY pulls from ALLOWED_URLS; never queries external search engines or other websites."""
+    """ONLY pulls from ALLOWED_URLS; never blocks on slow sites or external search engines."""
     allowed_set = set(ALLOWED_URLS)
-    fetched: List[Dict] = []
+    by_url: Dict[str, Dict] = {}
 
-    futures = [FETCH_POOL.submit(fetch_allowed_page, url, 1800) for url in ALLOWED_URLS]
+    futures = [FETCH_POOL.submit(fetch_allowed_page, url, 1200) for url in ALLOWED_URLS]
     try:
-        for fut in as_completed(futures, timeout=4.5):
-            item = fut.result()
-            if item and item.get("url") in allowed_set:
-                fetched.append(item)
+        for fut in as_completed(futures, timeout=BATCH_WAIT_TIMEOUT):
+            try:
+                item = fut.result(timeout=0.05)
+                if item and item.get("url") in allowed_set:
+                    by_url[item["url"]] = item
+            except Exception:
+                pass
     except Exception:
         pass
 
-    if not fetched:
-        fetched = [fetch_allowed_page(url, 1800) for url in ALLOWED_URLS]
+    fetched = [by_url.get(url) or build_fallback_source(url) for url in ALLOWED_URLS]
 
     scored = []
     for order, it in enumerate(fetched):
@@ -678,7 +688,16 @@ def home():
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ query: query, user_id: userId })
                 });
-                const data = await response.json();
+                const rawText = await response.text();
+                let data;
+                try {
+                    data = JSON.parse(rawText);
+                } catch (_) {
+                    throw new Error(`Server returned HTTP ${response.status}`);
+                }
+                if (!response.ok) {
+                    throw new Error(data.detail || `Server error HTTP ${response.status}`);
+                }
 
                 document.getElementById('headerPointsBadge').innerText = `⭐ Points: ${data.total_points} | 🌳 Trees: ${data.trees_planted}`;
 
@@ -728,7 +747,7 @@ def home():
                 `;
                 loadingCard.scrollIntoView({ behavior: 'smooth', block: 'end' });
             } catch (err) {
-                loadingCard.innerHTML = `<div style="color:#8F4E3E; font-weight:600;">Error communicating with backend server.</div>`;
+                loadingCard.innerHTML = `<div style="color:#8F4E3E; font-weight:600;">Error communicating with backend server (${escapeHtml(err.message || 'request failed')}).</div>`;
             }
         }
 
