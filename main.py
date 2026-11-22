@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.gzip import GZipMiddleware
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional
@@ -13,6 +13,7 @@ import json
 import time
 import os
 import re
+import traceback
 
 app = FastAPI(title="AnInag AI Research & 4-Solution Chat")
 # SPEED: compress the big HTML page and JSON replies (smaller = faster to download)
@@ -48,6 +49,12 @@ RE_JSON_OBJ = re.compile(r"\{.*\}", re.S)
 
 # SPEED: one shared pool for fetching pages in parallel
 FETCH_POOL = ThreadPoolExecutor(max_workers=6)
+# separate pool for saving points, so a slow website can never block saving
+SAVE_POOL = ThreadPoolExecutor(max_workers=1)
+
+# FIX 502: Gemini must answer within this many seconds, or we stop waiting.
+# (Render cuts off requests that take too long, which shows up as "HTTP 502".)
+GEMINI_TIMEOUT_SECONDS = 25
 
 # SPEED: cap timeouts and bytes read so slow government sites don't stall requests
 FAST_PAGE_TIMEOUT = 1.6
@@ -300,6 +307,8 @@ Return ONLY valid JSON (no ```json code fences) with this exact structure:
             generation_config={
                 "thinking_level": "low"
             },
+            # FIX 502: never wait forever for Gemini
+            timeout=GEMINI_TIMEOUT_SECONDS,
         )
         raw_output = getattr(interaction, "output_text", "") or ""
         data = extract_json_object(raw_output)
@@ -318,8 +327,13 @@ Return ONLY valid JSON (no ```json code fences) with this exact structure:
             "solutions": data.get("solutions", [])[:4]
         }
     except Exception as e:
+        # shows up in Render -> Logs so you can see what went wrong
+        print(f"[AnInag] Gemini error: {e!r}", flush=True)
+        message = str(e)
+        if "timed out" in message.lower() or "timeout" in type(e).__name__.lower():
+            message = f"Gemini took longer than {GEMINI_TIMEOUT_SECONDS} seconds. Please send your prompt again."
         return {
-            "ai_synthesis": f"AI summarization error: {str(e)}",
+            "ai_synthesis": f"AI summarization error: {message}",
             "source_summaries": {},
             "solutions": []
         }
@@ -327,7 +341,7 @@ Return ONLY valid JSON (no ```json code fences) with this exact structure:
 
 def save_database_in_background():
     # SPEED: don't make the user wait for the disk write
-    FETCH_POOL.submit(save_database, database)
+    SAVE_POOL.submit(save_database, database)
 
 
 def add_point(user_id: str) -> int:
@@ -342,6 +356,29 @@ def add_point(user_id: str) -> int:
 # --- 1. CHAT PROMPT, AI SUMMARIES, 4 SOLUTIONS & POINT REWARD ---
 @app.post("/api/search")
 def search_ngo_data(payload: SearchQuery):
+    # FIX 502: if anything unexpected breaks, send back a readable error
+    # instead of crashing (a crash is what makes Render show "HTTP 502")
+    try:
+        return run_search(payload)
+    except Exception as e:
+        print("[AnInag] /api/search crashed:\n" + traceback.format_exc(), flush=True)
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Backend error: {type(e).__name__}: {e}"},
+        )
+
+
+@app.get("/api/health")
+def health_check():
+    """Open this in your browser to check the server and Gemini key quickly."""
+    return {
+        "server": "ok",
+        "gemini_key_set": bool(GEMINI_API_KEY),
+        "saved_users": sum(1 for k in database if k.startswith("points_")),
+    }
+
+
+def run_search(payload: SearchQuery):
     raw_prompt = payload.query.strip()
     user_id = payload.user_id.strip() if payload.user_id else "user_001"
 
@@ -618,18 +655,10 @@ def home():
 
         function initUserFromQuery() {
             const params = new URLSearchParams(window.location.search);
-            const loggedOut = params.get("logged_out") === "1";
             const queryUserId = (params.get("user_id") || "").trim();
             const inputEl = document.getElementById("userIdInput");
 
-            if (loggedOut) {
-                try {
-                    localStorage.removeItem("aninag_user_id");
-                } catch (e) {}
-                if (inputEl) {
-                    inputEl.value = queryUserId || "user_001";
-                }
-            } else if (queryUserId && inputEl) {
+            if (queryUserId && inputEl) {
                 inputEl.value = queryUserId;
                 try {
                     localStorage.setItem("aninag_user_id", queryUserId);
@@ -701,6 +730,9 @@ def home():
                 try {
                     data = JSON.parse(rawText);
                 } catch (_) {
+                    if (response.status === 502 || response.status === 503 || response.status === 504) {
+                        throw new Error(`Server returned HTTP ${response.status}. The server is waking up or restarting. Wait about 30 seconds and send your prompt again`);
+                    }
                     throw new Error(`Server returned HTTP ${response.status}`);
                 }
                 if (!response.ok) {
