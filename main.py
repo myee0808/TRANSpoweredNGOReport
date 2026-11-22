@@ -21,7 +21,21 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 DB_FILE = "database.json"
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-ai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+print("[AnInag] loading app...", flush=True)
+
+# FIX DEPLOY: the Gemini connection is created on the FIRST prompt, not while Render
+# is starting the app. This keeps startup instant so Render can find the port.
+_ai_client = None
+_ai_client_lock = threading.Lock()
+
+
+def get_ai_client():
+    global _ai_client
+    if _ai_client is None and GEMINI_API_KEY:
+        with _ai_client_lock:
+            if _ai_client is None:
+                _ai_client = genai.Client(api_key=GEMINI_API_KEY)
+    return _ai_client
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
@@ -248,6 +262,7 @@ def refresh_allowed_pages():
 
 
 def _page_refresher_loop():
+    time.sleep(3)  # FIX DEPLOY: let Render see the open port first
     while True:
         try:
             refresh_allowed_pages()
@@ -260,6 +275,7 @@ def _page_refresher_loop():
 @app.on_event("startup")
 def start_page_refresher():
     threading.Thread(target=_page_refresher_loop, daemon=True).start()
+    print("[AnInag] server started, Render can now open the site", flush=True)
 
 
 def fetch_web_documents(query: str) -> List[Dict]:
@@ -347,13 +363,14 @@ def ask_gemini_json(ai_prompt: str, max_tokens: int) -> dict:
             if GEMINI_THINKING_LEVEL in ("low", "medium", "high"):
                 gen_config["thinking_level"] = GEMINI_THINKING_LEVEL
 
-            interaction = ai_client.interactions.create(
+            interaction = get_ai_client().interactions.create(
                 model=model_name,
                 input=ai_prompt,
                 generation_config=gen_config,
                 store=False,
+                timeout=max(4, min(GEMINI_TIMEOUT_SECONDS, remaining)),
             )
-            raw_output = getattr(interaction, "output_text", "") or ""
+            raw_output = extract_text_from_interaction(interaction)
             data = extract_json_object(raw_output)
             if model_name != GEMINI_MODELS[0]:
                 print(f"[AnInag] used backup model {model_name}", flush=True)
@@ -385,7 +402,7 @@ def build_gemini_gen_config(max_tokens: int) -> dict:
 def call_interactions_safe(model_name: str, prompt: str, max_tokens: int):
     cfg = build_gemini_gen_config(max_tokens)
     try:
-        return ai_client.interactions.create(
+        return get_ai_client().interactions.create(
             model=model_name,
             input=prompt,
             generation_config=cfg,
@@ -394,13 +411,13 @@ def call_interactions_safe(model_name: str, prompt: str, max_tokens: int):
     except TypeError:
         # Fallback if this SDK version doesn't accept `store` or `generation_config`
         try:
-            return ai_client.interactions.create(
+            return get_ai_client().interactions.create(
                 model=model_name,
                 input=prompt,
                 generation_config=cfg,
             )
         except TypeError:
-            return ai_client.interactions.create(
+            return get_ai_client().interactions.create(
                 model=model_name,
                 input=prompt,
             )
@@ -428,7 +445,7 @@ def extract_text_from_interaction(interaction) -> str:
 
 
 def generate_gemini_analysis(prompt: str, sources_context: str) -> dict:
-    if not ai_client:
+    if not get_ai_client():
         return {
             "ai_synthesis": "GEMINI_API_KEY is missing on Render. Add GEMINI_API_KEY under Render -> Environment.",
             "source_summaries": {},
@@ -542,6 +559,65 @@ def add_point(user_id: str) -> int:
     save_database_in_background()
     return new_points
 
+
+
+def run_search(payload: SearchQuery):
+    raw_prompt = (payload.query or "").strip()
+    user_id = payload.user_id.strip() if payload.user_id else "user_001"
+    if not raw_prompt:
+        return JSONResponse(status_code=400, content={"detail": "Please type a prompt first."})
+
+    # +1 point per prompt, 6 points = 1 tree
+    new_points = add_point(user_id)
+    trees_planted = new_points // 6
+
+    # SPEED: same prompt asked again recently? answer instantly from memory
+    cache_key = raw_prompt.lower()
+    cached = cache_get(cache_key)
+    if cached is None:
+        web_docs = fetch_web_documents(raw_prompt)
+        context_chunks = []
+        results = []
+        for idx, doc in enumerate(web_docs, start=1):
+            excerpt_text = doc.get("excerpt") or doc.get("snippet") or doc.get("title", "")
+            context_chunks.append(
+                f"[Source {idx}] {doc['title']}\nURL: {doc['url']}\nWebsite: {doc['domain']}\nExcerpt: {excerpt_text}"
+            )
+            results.append({
+                "id": idx,
+                "title": doc["title"],
+                "authors": doc["domain"],
+                "year": doc.get("year", 2026),
+                "journal": doc["domain"],
+                "takeaway": (doc.get("snippet") or excerpt_text)[:280],
+                "ai_summarized": False,
+                "citation_url": doc["url"],
+                "badge": "Approved Source",
+            })
+
+        ai_output = generate_gemini_analysis(raw_prompt, "\n\n".join(context_chunks))
+        ai_source_summaries = ai_output.get("source_summaries", {})
+        for r in results:
+            if ai_source_summaries.get(r["id"]):
+                r["takeaway"] = ai_source_summaries[r["id"]]
+                r["ai_summarized"] = True
+
+        cached = {
+            "ai_synthesis": ai_output.get("ai_synthesis", ""),
+            "solutions": ai_output.get("solutions", []),
+            "results": results,
+        }
+        if cached["solutions"]:  # only remember good answers, not errors
+            cache_set(cache_key, cached)
+
+    return {
+        "query": raw_prompt,
+        "user_id": user_id,
+        "points_earned": 1,
+        "total_points": new_points,
+        "trees_planted": trees_planted,
+        **cached,
+    }
 
 # --- 1. CHAT PROMPT, AI SUMMARIES, 4 SOLUTIONS & POINT REWARD ---
 @app.post("/api/search")
