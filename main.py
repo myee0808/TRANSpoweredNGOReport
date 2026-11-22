@@ -898,25 +898,31 @@ def home():
         }
 
         function initUserFromQuery() {
-            const params = new URLSearchParams(window.location.search);
-            const queryUserId = (params.get("user_id") || "").trim();
-            const inputEl = document.getElementById("userIdInput");
+    const params = new URLSearchParams(window.location.search);
+    const loggedOut = params.get("logged_out") === "1";
+    const queryUserId = (params.get("user_id") || "").trim();
+    const inputEl = document.getElementById("userIdInput");
 
-            if (queryUserId && inputEl) {
-                inputEl.value = queryUserId;
-                try {
-                    localStorage.setItem("aninag_user_id", queryUserId);
-                } catch (e) {}
-            } else if (inputEl) {
-                try {
-                    const savedId = localStorage.getItem("aninag_user_id");
-                    if (savedId) inputEl.value = savedId;
-                } catch (e) {}
-            }
+    if (loggedOut) {
+        try {
+            localStorage.removeItem("aninag_user_id");
+        } catch (e) {}
+        if (inputEl) inputEl.value = "user_001";
+    } else if (queryUserId && inputEl) {
+        inputEl.value = queryUserId;
+        try {
+            localStorage.setItem("aninag_user_id", queryUserId);
+        } catch (e) {}
+    } else if (inputEl) {
+        try {
+            const savedId = localStorage.getItem("aninag_user_id");
+            if (savedId) inputEl.value = savedId;
+        } catch (e) {}
+    }
 
-            syncTranspoweredMenuLinks();
-            fetchUserPoints();
-        }
+    syncTranspoweredMenuLinks();
+    fetchUserPoints();
+}
 
         function onUserIdChanged() {
             const inputEl = document.getElementById("userIdInput");
