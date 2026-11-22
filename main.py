@@ -8,6 +8,7 @@ from google import genai
 import urllib.request
 import urllib.parse
 import threading
+import html as html_lib
 import json
 import time
 import os
@@ -26,8 +27,19 @@ HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
+# STRICT ALLOWLIST: AnInag will ONLY read and cite these exact URLs
+ALLOWED_URLS: List[str] = [
+    "https://www.officialgazette.gov.ph/section/republic-acts/",
+    "https://lawphil.net/statutes/repacts/repacts.html",
+    "https://www.congress.gov.ph/legislative-documents",
+    "https://ldr.senate.gov.ph/subject/government-documents",
+    "https://ppp.gov.ph/project-database/",
+    "https://www.coa.gov.ph/FAQS/is-there-a-manual-or-list-of-documentary-requirements-for-common-government-transactions/",
+]
+
 # SPEED: compile regexes once instead of on every request
 RE_WORDS = re.compile(r"[a-zA-Z0-9]+")
+RE_TITLE = re.compile(r"<title[^>]*>(.*?)</title>", re.S | re.I)
 RE_SCRIPT_STYLE = re.compile(r"<(script|style).*?>.*?</\1>", re.S | re.I)
 RE_TAGS = re.compile(r"<[^<]+?>")
 RE_SPACES = re.compile(r"\s+")
@@ -35,10 +47,10 @@ RE_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.S)
 RE_JSON_OBJ = re.compile(r"\{.*\}", re.S)
 
 # SPEED: one shared pool for fetching pages in parallel
-FETCH_POOL = ThreadPoolExecutor(max_workers=8)
+FETCH_POOL = ThreadPoolExecutor(max_workers=6)
 
-# SPEED: only read the first part of each web page (the text we need is near the top)
-MAX_PAGE_BYTES = 150_000
+# SPEED: read enough of each allowed page to capture title and top content
+MAX_PAGE_BYTES = 200_000
 
 
 # --- PERSISTENT DISK STORAGE ---
@@ -98,39 +110,7 @@ def cache_set(key: str, value):
         _cache[key] = (time.time(), value)
 
 
-def fetch_page_excerpt(url: str, max_chars: int = 1200) -> str:
-    """Fetches a short text excerpt from a page so AI can summarize it."""
-    try:
-        req = urllib.request.Request(url, headers=HEADERS)
-        with urllib.request.urlopen(req, timeout=2.2) as resp:
-            raw_html = resp.read(MAX_PAGE_BYTES).decode("utf-8", errors="ignore")
-            raw_html = RE_SCRIPT_STYLE.sub(" ", raw_html)
-            text = RE_TAGS.sub(" ", raw_html)
-            text = RE_SPACES.sub(" ", text).strip()
-            return text[:max_chars]
-    except Exception:
-        return ""
-
-
-# --- LOOSER SEARCH: find articles/documents RELATED to the prompt ---
-SEARCH_URLS = [
-    "https://html.duckduckgo.com/html/?q={q}",   # main search
-    "https://lite.duckduckgo.com/lite/?q={q}",   # backup if the main one fails
-]
-RE_DDG_LINK = re.compile(r'<a[^>]+class=["\'](?:result__a|result-link)["\'][^>]*>.*?</a>', re.S)
-RE_HREF = re.compile(r'href=["\']([^"\']+)["\']')
-RE_DDG_SNIPPET = re.compile(r'class=["\'](?:result__snippet|result-snippet)["\'][^>]*>(.*?)</(?:a|td)>', re.S)
-TRUSTED_ENDINGS = (".gov.ph", ".gov", ".edu.ph", ".edu", ".org", ".org.ph", "lawphil.net", ".int")
-STOP_WORDS = {
-    "the", "and", "for", "are", "how", "what", "why", "can", "you", "with", "this", "that",
-    "from", "about", "into", "our", "your", "their", "does", "who", "which", "when", "where",
-    "will", "would", "should", "could", "give", "make", "tell", "please", "ways", "way",
-}
-MAX_SOURCES = 5
-
-
 def clean_html_text(text: str) -> str:
-    import html as html_lib
     return RE_SPACES.sub(" ", html_lib.unescape(RE_TAGS.sub(" ", text))).strip()
 
 
@@ -139,8 +119,12 @@ def get_domain(url: str) -> str:
     return domain[4:] if domain.startswith("www.") else domain
 
 
-def is_trusted(url: str) -> bool:
-    return get_domain(url).endswith(TRUSTED_ENDINGS)
+STOP_WORDS = {
+    "the", "and", "for", "are", "how", "what", "why", "can", "you", "with", "this", "that",
+    "from", "about", "into", "our", "your", "their", "does", "who", "which", "when", "where",
+    "will", "would", "should", "could", "give", "make", "tell", "please", "ways", "way",
+}
+MAX_SOURCES = 6
 
 
 def prompt_keywords(query: str) -> List[str]:
@@ -148,7 +132,7 @@ def prompt_keywords(query: str) -> List[str]:
 
 
 def relevance_score(query: str, title: str, text: str) -> int:
-    """LOOSE matching: counts how many prompt words appear (also matches 'flood' with 'flooding')."""
+    """Counts how many prompt words appear in the allowed source's title, URL, or text."""
     words = prompt_keywords(query)
     if not words:
         return 1
@@ -156,182 +140,69 @@ def relevance_score(query: str, title: str, text: str) -> int:
     return sum(1 for w in words if w in haystack or (len(w) > 5 and w[:5] in haystack))
 
 
-def search_web(query: str, limit: int = 5) -> List[Dict]:
-    """Returns [{url, title, snippet}] from DuckDuckGo (no API key needed)."""
-    for template in SEARCH_URLS:
-        url = template.format(q=urllib.parse.quote(query))
-        try:
-            req = urllib.request.Request(url, headers=HEADERS)
-            with urllib.request.urlopen(req, timeout=3.0) as response:
-                page = response.read().decode("utf-8", errors="ignore")
-        except Exception:
-            continue
-
-        links = RE_DDG_LINK.findall(page)
-        snippets = [clean_html_text(s) for s in RE_DDG_SNIPPET.findall(page)]
-        found = []
-        for i, link_html in enumerate(links):
-            href_match = RE_HREF.search(link_html)
-            if not href_match:
-                continue
-            href = href_match.group(1).replace("&amp;", "&")
-            uddg = urllib.parse.parse_qs(urllib.parse.urlparse(href).query).get("uddg")
-            real_url = uddg[0] if uddg else href
-            if not real_url.startswith("http") or "duckduckgo.com" in real_url:
-                continue  # skip ads / internal links
-            found.append({
-                "url": real_url,
-                "title": clean_html_text(link_html),
-                "snippet": snippets[i] if i < len(snippets) else "",
-            })
-            if len(found) >= limit:
-                break
-        if found:
-            return found
-    return []
-
-
-# --- BACKUP SOURCES (free, no API key, don't block you like web search does) ---
-API_HEADERS = {"User-Agent": "AnInag/1.0 (civic research chatbot)"}
-_web_search_paused_until = 0.0  # web search said "too many searches" -> rest it for a bit
-
-
-def get_json(url: str, timeout: float = 3.5):
-    req = urllib.request.Request(url, headers=API_HEADERS)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8", errors="ignore"))
-
-
-def search_research_papers(query: str, limit: int = 3) -> List[Dict]:
-    """Research papers/documents with abstracts from OpenAlex."""
-    url = (
-        "https://api.openalex.org/works?search=" + urllib.parse.quote(query)
-        + f"&per_page={limit}&filter=has_abstract:true"
-        + "&select=title,doi,id,publication_year,abstract_inverted_index,primary_location"
-    )
+def fetch_allowed_page(url: str, max_chars: int = 1800) -> Dict:
+    """Fetches ONLY from one of the pre-approved ALLOWED_URLS."""
+    domain = get_domain(url)
+    fallback_title = f"{domain} — {urllib.parse.urlparse(url).path.strip('/').replace('-', ' ').replace('/', ' / ') or 'Official Page'}"
     try:
-        data = get_json(url)
+        req = urllib.request.Request(url, headers=HEADERS)
+        with urllib.request.urlopen(req, timeout=3.5) as resp:
+            raw_html = resp.read(MAX_PAGE_BYTES).decode("utf-8", errors="ignore")
+            title_match = RE_TITLE.search(raw_html)
+            page_title = clean_html_text(title_match.group(1)) if title_match else fallback_title
+            body_html = RE_SCRIPT_STYLE.sub(" ", raw_html)
+            text = clean_html_text(body_html)
+            return {
+                "title": page_title or fallback_title,
+                "url": url,
+                "raw_url": url,
+                "domain": domain,
+                "kind": "allowed_source",
+                "year": 2026,
+                "trusted": True,
+                "snippet": text[:300],
+                "excerpt": text[:max_chars],
+            }
     except Exception:
-        return []
-    papers = []
-    for work in data.get("results", []):
-        inverted = work.get("abstract_inverted_index") or {}
-        positions = sorted((p, word) for word, plist in inverted.items() for p in plist)
-        abstract = " ".join(word for _, word in positions)
-        link = work.get("doi") or (work.get("primary_location") or {}).get("landing_page_url") or work.get("id")
-        if not link or not work.get("title") or len(abstract) < 80:
-            continue
-        papers.append({
-            "url": link,
-            "title": clean_html_text(work["title"]),
-            "snippet": abstract[:300],
-            "excerpt": abstract[:2000],
-            "kind": "research",
-            "year": work.get("publication_year") or 2026,
-            "source_name": ((work.get("primary_location") or {}).get("source") or {}).get("display_name"),
-        })
-    return papers
-
-
-def search_wikipedia(query: str, limit: int = 3) -> List[Dict]:
-    """Last-resort backup so the user always gets something related."""
-    url = (
-        "https://en.wikipedia.org/w/api.php?action=query&list=search&format=json"
-        f"&srlimit={limit}&srsearch=" + urllib.parse.quote(query)
-    )
-    try:
-        data = get_json(url)
-    except Exception:
-        return []
-    pages = []
-    for item in data.get("query", {}).get("search", []):
-        title = item.get("title", "")
-        pages.append({
-            "url": "https://en.wikipedia.org/wiki/" + urllib.parse.quote(title.replace(" ", "_")),
-            "title": title,
-            "snippet": clean_html_text(item.get("snippet", "")),
-            "kind": "encyclopedia",
-        })
-    return pages
+        return {
+            "title": fallback_title,
+            "url": url,
+            "raw_url": url,
+            "domain": domain,
+            "kind": "allowed_source",
+            "year": 2026,
+            "trusted": True,
+            "snippet": f"Official source from {domain} ({url}).",
+            "excerpt": f"Official source from {domain}: {url}",
+        }
 
 
 def fetch_web_documents(query: str) -> List[Dict]:
-    """Finds articles/documents RELATED to the prompt (not strict) and reads a bit of each."""
-    global _web_search_paused_until
+    """ONLY pulls from ALLOWED_URLS; never queries external search engines or other websites."""
+    allowed_set = set(ALLOWED_URLS)
+    fetched: List[Dict] = []
 
-    # Search the web AND research papers at the same time
-    use_web = time.time() >= _web_search_paused_until
-    web_future = FETCH_POOL.submit(search_web, query, 5) if use_web else None
-    papers_future = FETCH_POOL.submit(search_research_papers, query, 3)
-
-    web_items: List[Dict] = []
-    if web_future:
-        try:
-            web_items = web_future.result(timeout=5)
-        except Exception:
-            web_items = []
-        if not web_items:
-            _web_search_paused_until = time.time() + 60  # probably "too many searches"
+    futures = [FETCH_POOL.submit(fetch_allowed_page, url, 1800) for url in ALLOWED_URLS]
     try:
-        papers = papers_future.result(timeout=5)
+        for fut in as_completed(futures, timeout=4.5):
+            item = fut.result()
+            if item and item.get("url") in allowed_set:
+                fetched.append(item)
     except Exception:
-        papers = []
+        pass
 
-    for item in web_items:
-        item["kind"] = "web"
+    if not fetched:
+        fetched = [fetch_allowed_page(url, 1800) for url in ALLOWED_URLS]
 
-    # Read the web pages AT THE SAME TIME (research papers already come with their abstract)
-    if web_items:
-        futures = {FETCH_POOL.submit(fetch_page_excerpt, w["url"], 1500): w for w in web_items}
-        try:
-            for fut in as_completed(futures, timeout=2.0):
-                futures[fut]["page_text"] = fut.result()
-        except Exception:
-            pass  # slow pages just use the search snippet
+    scored = []
+    for order, it in enumerate(fetched):
+        searchable_text = f"{it.get('url', '')} {it.get('snippet', '')} {it.get('excerpt', '')}"
+        score = relevance_score(query, it.get("title", ""), searchable_text)
+        scored.append((score, order, it))
 
-    # Too few results? Add Wikipedia so the user still gets related reading
-    encyclopedia = search_wikipedia(query, 3) if len(web_items) + len(papers) < 3 else []
-
-    def ranked(items: List[Dict]) -> List[Dict]:
-        scored = []
-        for order, it in enumerate(items):
-            excerpt = it.get("excerpt") or f"{it.get('snippet', '')} {it.get('page_text', '')}".strip()
-            it["excerpt"] = excerpt[:2000]
-            score = relevance_score(query, it["title"], excerpt)
-            if is_trusted(it["url"]) or it["kind"] == "research":
-                score += 1  # small bonus for .gov / .edu / .org / research
-            scored.append((score, order, it))
-        # Best matches first, but NEVER drop everything: the search already judged these related
-        scored.sort(key=lambda s: (-s[0], s[1]))
-        return [it for _, _, it in scored]
-
-    web_ranked, papers_ranked = ranked(web_items), ranked(papers)
-    # Wikipedia is only a filler, so skip pages that share no words with the prompt
-    wiki_ranked = [w for w in ranked(encyclopedia) if relevance_score(query, w["title"], w["excerpt"]) > 0]
-
-    # Mix: up to 3 articles + up to 2 research papers, then fill up to 5 with whatever is left
-    chosen = web_ranked[:3] + papers_ranked[:2]
-    leftovers = web_ranked[3:] + papers_ranked[2:] + wiki_ranked
-    chosen += leftovers[: max(0, MAX_SOURCES - len(chosen))]
-
-    seen, results = set(), []
-    for it in chosen:
-        key = it["url"].split("#")[0].rstrip("/")
-        if key in seen:
-            continue
-        seen.add(key)
-        results.append({
-            "title": it["title"] or get_domain(it["url"]),
-            "url": it["url"],
-            "raw_url": it["url"],
-            "domain": it.get("source_name") or get_domain(it["url"]),
-            "kind": it["kind"],
-            "year": it.get("year", 2026),
-            "trusted": is_trusted(it["url"]) or it["kind"] == "research",
-            "snippet": it.get("snippet", ""),
-            "excerpt": it["excerpt"],
-        })
-    return results
+    matched = [it for score, _, it in scored if score > 0]
+    chosen = matched if matched else [it for _, _, it in sorted(scored, key=lambda s: s[1])]
+    return chosen[:MAX_SOURCES]
 
 
 def extract_json_object(text: str) -> dict:
@@ -348,7 +219,7 @@ def extract_json_object(text: str) -> dict:
 
 
 def generate_gemini_analysis(prompt: str, sources_context: str) -> dict:
-    """Uses Gemini 3.8 Flash Interactions API to summarize sources and generate 4 tailored solutions."""
+    """Uses Gemini 3.8 Flash Interactions API to summarize allowed sources and generate 4 tailored solutions."""
     if not ai_client:
         return {
             "ai_synthesis": "GEMINI_API_KEY is missing on Render. Add GEMINI_API_KEY under Render -> Environment.",
@@ -359,28 +230,28 @@ def generate_gemini_analysis(prompt: str, sources_context: str) -> dict:
     context_section = (
         sources_context
         if sources_context.strip()
-        else "No related articles were retrieved for this prompt. Answer from general knowledge."
+        else "No related records were found in the allowed official links for this prompt."
     )
 
     ai_prompt = f"""
 You are AnInag, a civic research and problem-solving assistant. Write all output in clear, natural English.
 User Prompt: "{prompt}"
 
-Related Articles / Documents (each starts with [Source N]):
+Allowed Official Sources (each starts with [Source N]):
 {context_section}
 
 Rules:
 - Write ONE summary for EVERY source listed above, using its exact number as "source_id".
-- Each source summary is 2-3 sentences: what the article/document says, then how it relates to the User Prompt.
-- Only use what the excerpt says. If the excerpt is short, summarize what is there and do not invent facts.
+- Each source summary is 2-3 sentences: what the page/document says, then how it relates to the User Prompt.
+- Only use what the excerpt says or what is directly shown in the source. Do not invent facts or cite outside websites.
 
 Return ONLY valid JSON (no ```json code fences) with this exact structure:
 {{
-  "overall_summary": "Clear, concise summary aligned to the User Prompt based on the provided information.",
+  "overall_summary": "Clear, concise summary aligned to the User Prompt based strictly on the provided allowed sources.",
   "source_summaries": [
     {{
       "source_id": 1,
-      "summary": "2-3 sentence summary of this article and how it relates to the User Prompt."
+      "summary": "2-3 sentence summary of this source and how it relates to the User Prompt."
     }}
   ],
   "solutions": [
@@ -480,7 +351,7 @@ def search_ngo_data(payload: SearchQuery):
         for idx, doc in enumerate(web_docs, start=1):
             excerpt_text = doc["excerpt"] or doc["snippet"] or doc["title"]
             context_chunks.append(
-                f"[Source {idx}] {doc['title']}\nWebsite: {doc['domain']}\nExcerpt: {excerpt_text}"
+                f"[Source {idx}] {doc['title']}\nURL: {doc['url']}\nWebsite: {doc['domain']}\nExcerpt: {excerpt_text}"
             )
 
             results.append({
@@ -493,9 +364,7 @@ def search_ngo_data(payload: SearchQuery):
                 "takeaway": (doc["snippet"] or excerpt_text)[:280],
                 "ai_summarized": False,
                 "citation_url": doc["url"],
-                "badge": {"research": "Research Paper", "encyclopedia": "Encyclopedia"}.get(
-                    doc["kind"], "Trusted Source" if doc["trusted"] else "Related Article"
-                )
+                "badge": "Approved Source"
             })
 
         ai_output = generate_gemini_analysis(raw_prompt, "\n\n".join(context_chunks))
@@ -540,7 +409,7 @@ def home():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AnInag AI Chat - 4 Solutions & Related Articles</title>
+    <title>AnInag AI Chat - 4 Solutions & Approved Sources</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -692,7 +561,7 @@ def home():
     <main class="chat-shell" id="chatThread">
         <section class="welcome-card">
             <h1>AnInag AI Chatbot</h1>
-            <p>Enter a prompt to get a summary, <strong>4 tailored solutions</strong>, and each source is carefully selected to ensure credibility. Every prompt awards <strong>+1 point</strong> (<strong>6 points = 1 tree</strong>) synced with MIT App Inventor.</p>
+            <p>Enter a prompt to get a summary, <strong>4 tailored solutions</strong>, and insights pulled strictly from your <strong>6 approved official links</strong>. Every prompt awards <strong>+1 point</strong> (<strong>6 points = 1 tree</strong>) synced with MIT App Inventor.</p>
         </section>
     </main>
 
@@ -834,14 +703,14 @@ def home():
                                 <div style="font-size:0.74rem; font-weight:700; color:var(--text-muted); text-transform:uppercase;">${res.ai_summarized ? 'AI Summary' : 'Preview'}</div>
                                 <div style="font-size:0.92rem; margin-top:4px; line-height:1.5; color:var(--primary);">${escapeHtml(res.takeaway)}</div>
                             </div>
-                            <a href="${escapeHtml(res.citation_url)}" target="_blank" class="source-link">🔗 Read the full article (${escapeHtml(res.journal)}) ↗</a>
+                            <a href="${escapeHtml(res.citation_url)}" target="_blank" class="source-link">🔗 Open approved source (${escapeHtml(res.journal)}) ↗</a>
                         </div>
                     `).join('')
-                    : `<div class="empty-sources-box">No related articles could be found right now. Try adding more detail to your prompt.</div>`;
+                    : `<div class="empty-sources-box">No matching records could be found in the approved sources right now.</div>`;
 
                 loadingCard.innerHTML = `
                     <div class="bot-header">
-                        <div class="bot-title">AI Summary, 4 Solutions & Related Articles</div>
+                        <div class="bot-title">AI Summary, 4 Solutions & Approved Sources</div>
                         <div class="reward-pill">+1 Pt → Total: ${data.total_points} | 🌳 Trees: ${data.trees_planted}</div>
                     </div>
                     <div>
@@ -853,7 +722,7 @@ def home():
                         <div class="solutions-grid">${solutionsHtml || '<div style="font-size:0.9rem; color:var(--text-muted);">No solutions returned. Check GEMINI_API_KEY in Render.</div>'}</div>
                     </div>
                     <div>
-                        <div class="section-heading">Related Articles & Documents</div>
+                        <div class="section-heading">Approved Sources Used</div>
                         ${sourcesHtml}
                     </div>
                 `;
