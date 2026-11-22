@@ -331,7 +331,6 @@ def models_to_try() -> List[str]:
         return [good] + [m for m in GEMINI_MODELS if m != good]
     return list(GEMINI_MODELS)
 
-
 def ask_gemini_json(ai_prompt: str, max_tokens: int) -> dict:
     """Fast Gemini call that returns JSON. Switches to a backup model if one is busy."""
     started = time.time()
@@ -341,23 +340,19 @@ def ask_gemini_json(ai_prompt: str, max_tokens: int) -> dict:
         if remaining < 4:
             break
         try:
+            gen_config = {
+                "max_output_tokens": max_tokens,
+                "temperature": 0.4,
+            }
+            if GEMINI_THINKING_LEVEL in ("low", "medium", "high"):
+                gen_config["thinking_level"] = GEMINI_THINKING_LEVEL
+
             interaction = ai_client.interactions.create(
                 model=model_name,
                 input=ai_prompt,
-                generation_config={
-            gen_config = {
-            "max_output_tokens": max_tokens,
-            "temperature": 0.4,
-        }
-        if GEMINI_THINKING_LEVEL in ("low", "medium", "high"):
-            gen_config["thinking_level"] = GEMINI_THINKING_LEVEL
-
-        interaction = ai_client.interactions.create(
-            model=model_name,
-            input=ai_prompt,
-            generation_config=gen_config,
-            store=False,
-        )
+                generation_config=gen_config,
+                store=False,
+            )
             raw_output = getattr(interaction, "output_text", "") or ""
             data = extract_json_object(raw_output)
             if model_name != GEMINI_MODELS[0]:
