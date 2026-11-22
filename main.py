@@ -654,6 +654,15 @@ def home():
 </head>
 <body>
     <header>
+
+    <nav class="aninag-menu-bar" aria-label="TRANSpowered Menu">
+  <a href="index.html" class="tp-menu-link" data-tp-target="index.html">Home</a>
+  <a href="condition.html" class="tp-menu-link" data-tp-target="condition.html">[01] Condition</a>
+  <a href="plant-trees.html" class="tp-menu-link" data-tp-target="plant-trees.html">[02] Plant Trees</a>
+  <a href="about-us.html" class="tp-menu-link" data-tp-target="about-us.html">[04] About Us</a>
+  <a href="progress-tracker.html" class="tp-menu-link" data-tp-target="progress-tracker.html">[05] Progress Tracker</a>
+  <a href="setup-account.html" class="tp-menu-link tp-menu-link--account" data-tp-target="setup-account.html">Set-Up Account</a>
+</nav>
         <div class="logo">AnInag AI Chat <span>4 Solutions</span></div>
         <div class="header-controls">
             <div class="user-id-group">
