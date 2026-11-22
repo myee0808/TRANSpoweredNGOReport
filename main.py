@@ -349,7 +349,6 @@ def ask_gemini_json(ai_prompt: str, max_tokens: int) -> dict:
                     "max_output_tokens": max_tokens,          # THINK FASTER: no rambling
                     "temperature": 0.4,
                 },
-                response_mime_type="application/json",  # clean JSON, no fixing needed
                 store=False,
                 timeout=min(GEMINI_TIMEOUT_SECONDS, remaining),
             )
