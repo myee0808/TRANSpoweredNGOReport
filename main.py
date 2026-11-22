@@ -54,10 +54,41 @@ SAVE_POOL = ThreadPoolExecutor(max_workers=1)
 
 # FIX 502: Gemini must answer within this many seconds, or we stop waiting.
 # (Render cuts off requests that take too long, which shows up as "HTTP 502".)
-GEMINI_TIMEOUT_SECONDS = 25
+GEMINI_TIMEOUT_SECONDS = 20
+
+# FIX "503 high demand": if one Gemini model is too busy, AnInag automatically
+# tries the next one in this list. First = your main model.
+GEMINI_MODELS = [
+    "gemini-3.8-flash",
+    "gemini-3-flash-preview",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+]
+# Stop trying other models after this many seconds in total (keeps Render from cutting us off)
+GEMINI_TOTAL_BUDGET_SECONDS = 45
+# remembers which model worked last, so busy models are skipped for a few minutes
+_last_good_model = {"name": None, "until": 0.0}
+_model_lock = threading.Lock()
+
+# THINK FASTER: "minimal" = Gemini thinks the least before answering (fastest).
+# Change to "low" if answers start feeling too shallow.
+GEMINI_THINKING_LEVEL = "minimal"
+
+# THINK FASTER: ask Gemini for the summaries and the 4 solutions at the SAME time
+# (2 smaller requests in parallel instead of 1 big one). Uses 2 Gemini requests per prompt.
+# Set to False if you hit Gemini's "too many requests" limit.
+PARALLEL_AI_CALLS = True
+AI_POOL = ThreadPoolExecutor(max_workers=8)
+
+# THINK FASTER: the 6 approved pages are read once and kept in memory,
+# then refreshed in the background every 30 minutes, so prompts never wait on them.
+PAGE_REFRESH_SECONDS = 30 * 60
+EXCERPT_CHARS = 700  # shorter excerpts = less for Gemini to read
 
 # SPEED: cap timeouts and bytes read so slow government sites don't stall requests
 FAST_PAGE_TIMEOUT = 1.6
+# pages are read in the background now, so they can take longer without slowing prompts
+BACKGROUND_PAGE_TIMEOUT = 10
 BATCH_WAIT_TIMEOUT = 1.8
 FAST_MAX_PAGE_BYTES = 80_000
 
@@ -169,12 +200,12 @@ def build_fallback_source(url: str) -> Dict:
     }
 
 
-def fetch_allowed_page(url: str, max_chars: int = 1200) -> Dict:
+def fetch_allowed_page(url: str, max_chars: int = 1200, timeout: float = FAST_PAGE_TIMEOUT) -> Dict:
     """Fetches ONLY from one of the pre-approved ALLOWED_URLS with a strict deadline."""
     fallback_item = build_fallback_source(url)
     try:
         req = urllib.request.Request(url, headers=HEADERS)
-        with urllib.request.urlopen(req, timeout=FAST_PAGE_TIMEOUT) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw_html = resp.read(FAST_MAX_PAGE_BYTES).decode("utf-8", errors="ignore")
             title_match = RE_TITLE.search(raw_html)
             page_title = clean_html_text(title_match.group(1)) if title_match else fallback_item["title"]
@@ -192,24 +223,49 @@ def fetch_allowed_page(url: str, max_chars: int = 1200) -> Dict:
         return fallback_item
 
 
+_page_cache: Dict[str, Dict] = {}
+_page_cache_lock = threading.Lock()
+
+
+def refresh_allowed_pages():
+    """Reads all approved pages in parallel and stores them in memory."""
+    futures = {FETCH_POOL.submit(fetch_allowed_page, url, EXCERPT_CHARS, BACKGROUND_PAGE_TIMEOUT): url for url in ALLOWED_URLS}
+    for fut in as_completed(futures):
+        url = futures[fut]
+        try:
+            item = fut.result()
+        except Exception:
+            item = None
+        if item:
+            with _page_cache_lock:
+                old = _page_cache.get(url)
+                failed_now = item.get("excerpt", "").startswith("Official source from")
+                had_good = old and not old.get("excerpt", "").startswith("Official source from")
+                # keep the good older copy if the site failed this time
+                if failed_now and had_good:
+                    continue
+                _page_cache[url] = item
+
+
+def _page_refresher_loop():
+    while True:
+        try:
+            refresh_allowed_pages()
+            print(f"[AnInag] approved pages refreshed ({len(_page_cache)} in memory)", flush=True)
+        except Exception as e:
+            print(f"[AnInag] page refresh error: {e!r}", flush=True)
+        time.sleep(PAGE_REFRESH_SECONDS)
+
+
+@app.on_event("startup")
+def start_page_refresher():
+    threading.Thread(target=_page_refresher_loop, daemon=True).start()
+
+
 def fetch_web_documents(query: str) -> List[Dict]:
-    """ONLY pulls from ALLOWED_URLS; never blocks on slow sites or external search engines."""
-    allowed_set = set(ALLOWED_URLS)
-    by_url: Dict[str, Dict] = {}
-
-    futures = [FETCH_POOL.submit(fetch_allowed_page, url, 1200) for url in ALLOWED_URLS]
-    try:
-        for fut in as_completed(futures, timeout=BATCH_WAIT_TIMEOUT):
-            try:
-                item = fut.result(timeout=0.05)
-                if item and item.get("url") in allowed_set:
-                    by_url[item["url"]] = item
-            except Exception:
-                pass
-    except Exception:
-        pass
-
-    fetched = [by_url.get(url) or build_fallback_source(url) for url in ALLOWED_URLS]
+    """ONLY uses ALLOWED_URLS. Reads them from memory (instant) instead of the internet."""
+    with _page_cache_lock:
+        fetched = [_page_cache.get(url) or build_fallback_source(url) for url in ALLOWED_URLS]
 
     scored = []
     for order, it in enumerate(fetched):
@@ -235,8 +291,90 @@ def extract_json_object(text: str) -> dict:
         raise
 
 
+SUMMARY_SHAPE = """{
+  "overall_summary": "2-3 sentence summary aligned to the User Prompt, based only on the sources.",
+  "source_summaries": [
+    {"source_id": 1, "summary": "1-2 sentences: what the source says and how it relates to the User Prompt."}
+  ]
+}"""
+
+SOLUTIONS_SHAPE = """{
+  "solutions": [
+    {"number": "Solution 1", "title": "Short title", "focus": "Focus area", "description": "1-2 practical sentences."},
+    {"number": "Solution 2", "title": "Short title", "focus": "Focus area", "description": "1-2 practical sentences."},
+    {"number": "Solution 3", "title": "Short title", "focus": "Focus area", "description": "1-2 practical sentences."},
+    {"number": "Solution 4", "title": "Short title", "focus": "Focus area", "description": "1-2 practical sentences."}
+  ]
+}"""
+
+
+class GeminiBusyError(Exception):
+    """Every Gemini model we tried was busy or unavailable."""
+
+
+def is_busy_error(e: Exception) -> bool:
+    """True for 'too busy / try again' errors (503, 429, 500, overloaded, model not available)."""
+    code = getattr(e, "status_code", None) or getattr(e, "code", None)
+    if code in (404, 429, 500, 502, 503, 504):
+        return True
+    text = f"{type(e).__name__} {e}".lower()
+    return any(k in text for k in (
+        "503", "429", "high demand", "overloaded", "unavailable", "resource_exhausted",
+        "rate limit", "try again later", "timed out", "timeout", "not found", "404",
+    ))
+
+
+def models_to_try() -> List[str]:
+    with _model_lock:
+        good = _last_good_model["name"] if time.time() < _last_good_model["until"] else None
+    if good and good in GEMINI_MODELS:
+        return [good] + [m for m in GEMINI_MODELS if m != good]
+    return list(GEMINI_MODELS)
+
+
+def ask_gemini_json(ai_prompt: str, max_tokens: int) -> dict:
+    """Fast Gemini call that returns JSON. Switches to a backup model if one is busy."""
+    started = time.time()
+    last_error: Optional[Exception] = None
+    for attempt, model_name in enumerate(models_to_try()):
+        remaining = GEMINI_TOTAL_BUDGET_SECONDS - (time.time() - started)
+        if remaining < 4:
+            break
+        try:
+            interaction = ai_client.interactions.create(
+                model=model_name,
+                input=ai_prompt,
+                generation_config={
+                    "thinking_level": GEMINI_THINKING_LEVEL,  # THINK FASTER
+                    "max_output_tokens": max_tokens,          # THINK FASTER: no rambling
+                    "temperature": 0.4,
+                },
+                response_mime_type="application/json",  # clean JSON, no fixing needed
+                store=False,
+                timeout=min(GEMINI_TIMEOUT_SECONDS, remaining),
+            )
+            raw_output = getattr(interaction, "output_text", "") or ""
+            data = extract_json_object(raw_output)
+            if model_name != GEMINI_MODELS[0]:
+                print(f"[AnInag] used backup model {model_name}", flush=True)
+                # skip the busy main model for 3 minutes
+                with _model_lock:
+                    _last_good_model.update(name=model_name, until=time.time() + 180)
+            elif _last_good_model["name"]:
+                with _model_lock:
+                    _last_good_model.update(name=None, until=0.0)
+            return data
+        except Exception as e:
+            last_error = e
+            print(f"[AnInag] {model_name} failed: {str(e)[:200]}", flush=True)
+            if not is_busy_error(e):
+                raise  # real problem (bad key, bad request) -> show it
+            time.sleep(0.4)  # tiny pause before trying the next model
+    raise GeminiBusyError(str(last_error) if last_error else "no model answered in time")
+
+
 def generate_gemini_analysis(prompt: str, sources_context: str) -> dict:
-    """Uses Gemini 3.8 Flash Interactions API to summarize allowed sources and generate 4 tailored solutions."""
+    """Summarizes the approved sources and writes 4 tailored solutions, as fast as possible."""
     if not ai_client:
         return {
             "ai_synthesis": "GEMINI_API_KEY is missing on Render. Add GEMINI_API_KEY under Render -> Environment.",
@@ -250,68 +388,50 @@ def generate_gemini_analysis(prompt: str, sources_context: str) -> dict:
         else "No related records were found in the allowed official links for this prompt."
     )
 
-    ai_prompt = f"""
-You are AnInag, a civic research and problem-solving assistant. Write all output in clear, natural English.
+    base = f"""You are AnInag, a civic research and problem-solving assistant. Write in clear, natural English.
 User Prompt: "{prompt}"
 
 Allowed Official Sources (each starts with [Source N]):
 {context_section}
 
-Rules:
-- Write ONE summary for EVERY source listed above, using its exact number as "source_id".
-- Each source summary is 2-3 sentences: what the page/document says, then how it relates to the User Prompt.
-- Only use what the excerpt says or what is directly shown in the source. Do not invent facts or cite outside websites.
-
-Return ONLY valid JSON (no ```json code fences) with this exact structure:
-{{
-  "overall_summary": "Clear, concise summary aligned to the User Prompt based strictly on the provided allowed sources.",
-  "source_summaries": [
-    {{
-      "source_id": 1,
-      "summary": "2-3 sentence summary of this source and how it relates to the User Prompt."
-    }}
-  ],
-  "solutions": [
-    {{
-      "number": "Solution 1",
-      "title": "Short solution title",
-      "focus": "Focus area",
-      "description": "Concrete, practical solution tailored to the User Prompt."
-    }},
-    {{
-      "number": "Solution 2",
-      "title": "Short solution title",
-      "focus": "Focus area",
-      "description": "Concrete, practical solution tailored to the User Prompt."
-    }},
-    {{
-      "number": "Solution 3",
-      "title": "Short solution title",
-      "focus": "Focus area",
-      "description": "Concrete, practical solution tailored to the User Prompt."
-    }},
-    {{
-      "number": "Solution 4",
-      "title": "Short solution title",
-      "focus": "Focus area",
-      "description": "Concrete, practical solution tailored to the User Prompt."
-    }}
-  ]
-}}
+Only use what the sources say. Do not invent facts or cite outside websites.
+"""
+    summary_prompt = base + f"""
+Write ONE summary for EVERY source above, using its exact number as "source_id".
+Return ONLY JSON in this shape:
+{SUMMARY_SHAPE}
+"""
+    solutions_prompt = base + f"""
+Write exactly 4 concrete, practical solutions tailored to the User Prompt.
+Return ONLY JSON in this shape:
+{SOLUTIONS_SHAPE}
+"""
+    both_prompt = base + f"""
+Write ONE summary for EVERY source above (using its exact number as "source_id"),
+then exactly 4 concrete, practical solutions tailored to the User Prompt.
+Return ONLY JSON with these keys: "overall_summary", "source_summaries", "solutions".
+Summaries shape: {SUMMARY_SHAPE}
+Solutions shape: {SOLUTIONS_SHAPE}
 """
 
     try:
-        interaction = ai_client.interactions.create(
-            model="gemini-3.8-flash",
-            input=ai_prompt,
-            generation_config={
-                "thinking_level": "low"
-            },
-            # FIX 502: never wait forever for Gemini
-            timeout=GEMINI_TIMEOUT_SECONDS,
-        )
-        raw_output = getattr(interaction, "output_text", "") or ""
-        data = extract_json_object(raw_output)
+        if PARALLEL_AI_CALLS:
+            # THINK FASTER: both halves are written at the same time
+            f_sum = AI_POOL.submit(ask_gemini_json, summary_prompt, 900)
+            f_sol = AI_POOL.submit(ask_gemini_json, solutions_prompt, 700)
+            data = {}
+            errors = []
+            for fut in (f_sum, f_sol):
+                try:
+                    data.update(fut.result(timeout=GEMINI_TIMEOUT_SECONDS + 2))
+                except Exception as e:
+                    errors.append(e)
+            if errors and not data:
+                raise errors[0]
+            if errors:
+                print(f"[AnInag] one Gemini half failed: {errors[0]!r}", flush=True)
+        else:
+            data = ask_gemini_json(both_prompt, 1600)
 
         summary_map = {}
         for item in data.get("source_summaries", []):
@@ -329,11 +449,13 @@ Return ONLY valid JSON (no ```json code fences) with this exact structure:
     except Exception as e:
         # shows up in Render -> Logs so you can see what went wrong
         print(f"[AnInag] Gemini error: {e!r}", flush=True)
-        message = str(e)
-        if "timed out" in message.lower() or "timeout" in type(e).__name__.lower():
-            message = f"Gemini took longer than {GEMINI_TIMEOUT_SECONDS} seconds. Please send your prompt again."
+        if isinstance(e, GeminiBusyError):
+            friendly = ("AnInag's AI is very busy right now (Google's Gemini servers are overloaded). "
+                        "Please wait a minute and send your prompt again. Your sources are still listed below.")
+        else:
+            friendly = f"AI summarization error: {e}"
         return {
-            "ai_synthesis": f"AI summarization error: {message}",
+            "ai_synthesis": friendly,
             "source_summaries": {},
             "solutions": []
         }
@@ -778,7 +900,7 @@ def home():
                     </div>
                     <div>
                         <div class="section-heading">4 Tailored Solutions</div>
-                        <div class="solutions-grid">${solutionsHtml || '<div style="font-size:0.9rem; color:var(--text-muted);">No solutions returned. Check GEMINI_API_KEY in Render.</div>'}</div>
+                        <div class="solutions-grid">${solutionsHtml || '<div style="font-size:0.9rem; color:var(--text-muted);">No solutions this time — the AI was busy. Please send your prompt again in a minute.</div>'}</div>
                     </div>
                     <div>
                         <div class="section-heading">Approved Sources Used</div>
