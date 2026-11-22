@@ -680,12 +680,12 @@ def home():
             <a href="/docs" style="color:var(--text-muted); text-decoration:none; font-size:0.85rem; font-weight:600;">API Docs</a>
         </div>
         <nav class="aninag-menu-bar" aria-label="TRANSpowered Menu">
-            <a href="https://YOUR-USERNAME.github.io/YOUR-TRANS-REPO/index.html" class="tp-menu-link" data-tp-path="index.html">Home</a>
-            <a href="https://YOUR-USERNAME.github.io/YOUR-TRANS-REPO/condition.html" class="tp-menu-link" data-tp-path="condition.html">[01] Condition</a>
-            <a href="https://YOUR-USERNAME.github.io/YOUR-TRANS-REPO/plant-trees.html" class="tp-menu-link" data-tp-path="plant-trees.html">[02] Plant Trees</a>
-            <a href="https://YOUR-USERNAME.github.io/YOUR-TRANS-REPO/about-us.html" class="tp-menu-link" data-tp-path="about-us.html">[04] About Us</a>
-            <a href="https://YOUR-USERNAME.github.io/YOUR-TRANS-REPO/progress-tracker.html" class="tp-menu-link" data-tp-path="progress-tracker.html">[05] Progress Tracker</a>
-            <a href="https://YOUR-USERNAME.github.io/YOUR-TRANS-REPO/setup-account.html" class="tp-menu-link tp-menu-link--account" data-tp-path="setup-account.html">Set-Up Account</a>
+            <a href="https://aipoweredsolution-olcy.onrender.com/index.html" class="tp-menu-link" data-tp-path="index.html">Home</a>
+            <a href="https://aipoweredsolution-olcy.onrender.com/condition.html" class="tp-menu-link" data-tp-path="condition.html">[01] Condition</a>
+            <a href="https://aipoweredsolution-olcy.onrender.com/plant-trees.html" class="tp-menu-link" data-tp-path="plant-trees.html">[02] Plant Trees</a>
+            <a href="https://aipoweredsolution-olcy.onrender.com/about-us.html" class="tp-menu-link" data-tp-path="about-us.html">[04] About Us</a>
+            <a href="https://aipoweredsolution-olcy.onrender.com/progress-tracker.html" class="tp-menu-link" data-tp-path="progress-tracker.html">[05] Progress Tracker</a>
+            <a href="https://aipoweredsolution-olcy.onrender.com/setup-account.html" class="tp-menu-link tp-menu-link--account" data-tp-path="setup-account.html">Set-Up Account</a>
         </nav>
     </header>
 
