@@ -783,9 +783,27 @@ def home():
         }
         .solutions-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
         .solution-card {
-            background: var(--bg); border: 1px solid var(--border); border-radius: 12px;
-            padding: 14px; display: flex; flex-direction: column; gap: 6px;
-        }
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    cursor: pointer;
+    transition: border-color 0.18s ease, transform 0.15s ease, box-shadow 0.18s ease;
+}
+.solution-card:hover {
+    border-color: var(--brand);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(91, 58, 41, 0.08);
+}
+.solution-cta {
+    margin-top: 6px;
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: var(--brand-dark);
+}
         .solution-badge {
             align-self: flex-start; background: var(--brand); color: #fff;
             font-size: 0.72rem; font-weight: 700; padding: 2px 8px; border-radius: 6px;
