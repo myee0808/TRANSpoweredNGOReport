@@ -487,12 +487,12 @@ INSTRUCTIONS:
 
 Return ONLY valid JSON (no ```json fences) with this exact structure:
 {{
-  "overall_summary": "10 clear sentences for a 12-to-18-year-old explaining the key Philippine rules/policies for this topic and why they matter.",
+  "overall_summary": "5-7 clear sentences for a 12-to-18-year-old explaining the key Philippine rules/policies for this topic and why they matter.",
   "specific_policies": [
     {{
       "title": "Exact name of the specific Philippine law, order, or policy",
       "agency_or_type": "Republic Act / Executive Order / Agency Rule",
-      "summary": "10 simple sentences explaining what this specific rule does in friendly words.",
+      "summary": "5-7 simple sentences explaining what this specific rule does in friendly words.",
       "url": "https://..."
     }}
   ],
