@@ -54,6 +54,7 @@ HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
+From the 6 approved links below, choose and display ONLY the link(s) that directly match the user's topic. Do NOT list all 6 links—for example, if the user asks about health, include only the health policy/regulation link(s). Never invent outside links.
 # STRICT ALLOWLIST: AnInag will ONLY read and cite these exact URLs
 ALLOWED_URLS: List[str] = [
     "https://www.officialgazette.gov.ph/section/republic-acts/",
