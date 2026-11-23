@@ -350,9 +350,7 @@ def build_gemini_gen_config(max_tokens: int) -> dict:
         "max_output_tokens": max_tokens,
         "temperature": 0.35,
     }
-    if GEMINI_THINKING_LEVEL in ("low", "medium", "high"):
-        cfg["thinking_level"] = GEMINI_THINKING_LEVEL
-    return cfg
+    
 
 
 def extract_text_from_response(resp) -> str:
@@ -568,20 +566,13 @@ Return ONLY valid JSON (no ```json fences) with this exact structure:
         print(f"[ANINAG_GEMINI_ERR] {type(e).__name__}: {e}", flush=True)
         err_detail = str(e).strip() or type(e).__name__
         print(f"[AnInag] Gemini final error ({type(e).__name__}): {err_detail}", flush=True)
-        if isinstance(e, GeminiBusyError):
-            friendly = (
-                "AnInag's AI helper is super busy right now. "
-                "Please wait a moment and ask your question again!"
-            )
-        else:
-            friendly = f"AI summarization error ({type(e).__name__}): {err_detail}"
+        friendly = f"AI summarization error ({type(e).__name__}): {err_detail}"
         return {
             "ai_synthesis": friendly,
             "selected_source_ids": [],
             "source_summaries": {},
             "solutions": [],
         }
-
 
 def save_database_in_background():
     SAVE_POOL.submit(save_database, database)
