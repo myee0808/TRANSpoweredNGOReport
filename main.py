@@ -526,7 +526,6 @@ Return ONLY valid JSON (no ```json fences) with this exact structure:
   ]
 }}
 """
-
     try:
         data = ask_gemini_json(ai_prompt, max_tokens=1800)
 
