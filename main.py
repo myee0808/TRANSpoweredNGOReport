@@ -95,7 +95,7 @@ RE_JSON_OBJ = re.compile(r"\{.*\}", re.S)
 FETCH_POOL = ThreadPoolExecutor(max_workers=6)
 SAVE_POOL = ThreadPoolExecutor(max_workers=1)
 
-GEMINI_TIMEOUT_SECONDS = 18
+GEMINI_TIMEOUT_SECONDS = 28
 
 GEMINI_MODELS = [
     "gemini-3.8-flash",
@@ -104,7 +104,7 @@ GEMINI_MODELS = [
     "gemini-3.1-flash-lite",
 ]
 _dead_models = set()
-GEMINI_TOTAL_BUDGET_SECONDS = 40
+GEMINI_TOTAL_BUDGET_SECONDS = 55
 _last_good_model = {"name": None, "until": 0.0}
 _model_lock = threading.Lock()
 
@@ -448,14 +448,12 @@ def ask_gemini_json(ai_prompt: str, max_tokens: int) -> dict:
         except Exception as e:
             last_error = e
             print(f"[AnInag] {model_name} failed: {type(e).__name__}: {str(e)[:200]}", flush=True)
-            if is_missing_model_error(e):
-                with _model_lock:
-                    _dead_models.add(model_name)
-                continue
-            if not is_busy_error(e):
+            if not is_busy_error(e) and not is_missing_model_error(e):
                 raise
             time.sleep(0.3)
     raise GeminiBusyError(str(last_error) if last_error else "no model answered in time")
+
+
 def generate_gemini_analysis(prompt: str, sources_context: str) -> dict:
     if not get_ai_client():
         return {
@@ -1084,4 +1082,5 @@ def home():
         }
     </script>
 </body>
-</html>"""
+</html>
+"""
