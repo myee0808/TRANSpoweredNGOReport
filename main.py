@@ -473,12 +473,6 @@ def generate_gemini_analysis(prompt: str, sources_context: str) -> dict:
         else "No related records were found in the allowed official links for this prompt."
     )
 
-    ai_prompt = f"""You are AnInag, a helpful civic and policy guide for the Philippines.
-User Prompt: "{prompt}"
-
-Reference Context from Approved Catalog:
-{context_section}
-
 ai_prompt = f"""You are AnInag, a helpful civic and policy guide for the Philippines.
 User Prompt: "{prompt}"
 
