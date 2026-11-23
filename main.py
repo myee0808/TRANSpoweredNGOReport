@@ -1009,15 +1009,21 @@ def home():
 
                 document.getElementById('headerPointsBadge').innerText = `⭐ Points: ${data.total_points} | 🌳 Trees: ${data.trees_planted}`;
 
-                const solutionsHtml = (data.solutions || []).map(sol => `
-                    <div class="solution-card">
+               const cardIndex = document.querySelectorAll('.bot-card').length;
+                window.__aninagSolutions = window.__aninagSolutions || {};
+                window.__aninagSolutions[cardIndex] = data.solutions || [];
+
+                const solutionsHtml = (data.solutions || []).map((sol, idx) => `
+                    <div class="solution-card" role="button" tabindex="0"
+                         onclick="selectSolutionForTracker(${cardIndex}, ${idx})"
+                         onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectSolutionForTracker(${cardIndex}, ${idx}); }">
                         <span class="solution-badge">${escapeHtml(sol.number)}</span>
                         <div class="solution-title">${escapeHtml(sol.title)}</div>
                         <div class="solution-focus">${escapeHtml(sol.focus)}</div>
                         <div class="solution-desc">${escapeHtml(sol.description)}</div>
+                        <div class="solution-cta">Add to Progress Tracker -&gt;</div>
                     </div>
                 `).join('');
-
                 const sourcesHtml = (data.results && data.results.length > 0)
                     ? data.results.map(res => `
                         <div class="source-card">
@@ -1060,6 +1066,25 @@ def home():
         }
 
         document.addEventListener("DOMContentLoaded", initUserFromQuery);
+
+        function selectSolutionForTracker(cardIndex, solIndex) {
+            const list = (window.__aninagSolutions && window.__aninagSolutions[cardIndex]) || [];
+            const sol = list[solIndex];
+            if (!sol) return;
+
+            const userId = (document.getElementById('userIdInput')?.value.trim()) || 'user_001';
+            const trackerUrl = new URL('https://aipoweredsolution-olcy.onrender.com/progress-tracker.html');
+
+            if (userId && userId !== 'user_001') {
+                trackerUrl.searchParams.set('user_id', userId);
+            }
+            trackerUrl.searchParams.set('new_task_title', sol.title || sol.number || 'Selected Solution');
+            trackerUrl.searchParams.set('new_task_focus', sol.focus || 'AnInag Action Item');
+            trackerUrl.searchParams.set('new_task_desc', sol.description || '');
+            trackerUrl.searchParams.set('from_aninag', '1');
+
+            window.location.href = trackerUrl.toString();
+        }
     </script>
 </body>
 </html>"""
