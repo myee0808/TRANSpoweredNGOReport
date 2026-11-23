@@ -517,17 +517,18 @@ Return ONLY valid JSON (no ```json fences) with this exact structure:
       "focus": "Home / School / Community / Official Rule",
       "description": "3 simple, practical sentences for a 12-to-18-year-old."
     }},
-    {{
-      "number": "Solution 4",
-      "title": "Short clear title",
-      "focus": "Home / School / Community / Official Rule",
-      "description": "3 simple, practical sentences for a 12-to-18-year-old."
+  {{
+        "number": "Solution 4",
+        "title": "Short clear title",
+        "focus": "Home / School / Community / Official Rule",
+        "description": "3 clear, practical sentences for a 12-to-18-year-old."
     }}
   ]
 }}
 """
+
     try:
-        data = ask_gemini_json(ai_prompt, max_tokens=1800)
+        data = ask_gemini_json(ai_prompt, max_tokens=2800)
 
         selected_ids: List[int] = []
         for raw_id in data.get("selected_source_ids", []) or []:
@@ -537,7 +538,6 @@ Return ONLY valid JSON (no ```json fences) with this exact structure:
                     selected_ids.append(sid)
             except ValueError:
                 continue
-
         summary_map: Dict[int, str] = {}
         for item in data.get("source_summaries", []) or []:
             if not isinstance(item, dict):
