@@ -506,9 +506,12 @@ Allowed Official Sources (each starts with [Source N]):
 
 Rules:
 - Only use what the sources say or what is directly shown in the source. Do not invent facts or cite outside websites.
-- Write a concise overall_summary aligned to the User Prompt.
+- Write a concise overall_summary aligned to the User Prompt. Write the summary as if you are explaining it to a curious 5-to-10-year-old child.
+- Use simple, everyday words and short, friendly sentences.
+- Do NOT use technical jargon, legal terms, or big complicated words (for example, say "rules that keep people safe and healthy" instead of "healthcare regulatory frameworks").
+- If you must mention a tricky concept, explain it immediately using a simple everyday example.
 - Write ONE short summary for EVERY source listed above, using its exact number as "source_id".
-- Write 4 concrete, practical solutions tailored to the User Prompt.
+- Write 4 concrete, practical solutions tailored to the User Prompt. Apply this same simple, jargon-free 5-to-10-year-old reading level to the 4 solution descriptions.
 
 Return ONLY valid JSON (no ```json fences) with this exact structure:
 {{
