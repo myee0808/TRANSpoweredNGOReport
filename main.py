@@ -486,7 +486,7 @@ Reference Context from Approved Catalog:
 {context_section}
 
 INSTRUCTIONS:
-1. Give a rich, clear, substantial explanation of actual Philippine laws, rules, policies, or government programs that directly match the User Prompt. Do NOT give repetitive or vague answers—mention real, specific Philippine policies/regulations (such as specific Republic Acts, Executive Orders, or agency rules) that apply to the user's topic.
+1. Give a rich, clear, substantial explanation of actual Philippine laws, rules, policies, or government programs that directly match the User Prompt. Do NOT give repetitive or vague answers—mention real, specific Philippine policies or regulations (such as specific Republic Acts, Executive Orders, or agency rules) that apply to the user's topic.
 2. Write in a warm, clear style that a curious 12-to-18-year-old can easily understand:
     Use simple everyday words and short, friendly sentences.
     Avoid heavy legal jargon or big complicated terms; whenever you mention a law or rule, explain right away in simple words what it does to help people or nature.
