@@ -521,7 +521,7 @@ Return ONLY valid JSON (no ```json fences) with this exact structure:
       "number": "Solution 3",
       "title": "Short clear title",
       "focus": "Home / School / Community / Official Rule",
-      "description": "3 simple, practical sentences for a 12-to-18-year-old.."
+      "description": "3 simple, practical sentences for a 12-to-18-year-old."
     }},
     {{
       "number": "Solution 4",
