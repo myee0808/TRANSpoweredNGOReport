@@ -52,28 +52,32 @@ HEADERS = {
 # STRICT ALLOWLIST: AnInag will ONLY cite these exact URLs, tagged by topic so AI picks only relevant ones
 ALLOWED_SOURCE_CATALOG: List[Dict[str, str]] = [
     {
+        "url": "https://www.officialgazette.gov.ph/2026/10/13/executive-order-no-127-s-2026/",
+        "topics": "environment laws, climate change, carbon market policy, DENR, nature protection, green rules, environmental regulations",
+    },
+    {
         "url": "https://www.officialgazette.gov.ph/section/republic-acts/",
-        "topics": "laws, republic acts, health policies, healthcare regulations, public health laws, safety rules, community rules",
+        "topics": "republic acts, national laws, health policies, healthcare regulations, public safety laws",
     },
     {
         "url": "https://lawphil.net/statutes/repacts/repacts.html",
-        "topics": "legal texts, republic acts, health statutes, medical and sanitation laws, government regulations",
+        "topics": "full text laws, statutes, republic acts, health and environmental regulations",
     },
     {
         "url": "https://www.congress.gov.ph/legislative-documents",
-        "topics": "proposed bills, health legislation, policy hearings, government laws and programs",
+        "topics": "house bills, legislative documents, health and environment proposals",
     },
     {
         "url": "https://ldr.senate.gov.ph/subject/government-documents",
-        "topics": "senate documents, health policy records, public programs, official government reports",
+        "topics": "senate documents, official government records, policy documents",
     },
     {
         "url": "https://ppp.gov.ph/project-database/",
-        "topics": "public-private projects, hospitals, clinics, water and sanitation infrastructure, community building projects",
+        "topics": "public-private projects, infrastructure, clinics, environmental and community projects",
     },
     {
         "url": "https://www.coa.gov.ph/FAQS/is-there-a-manual-or-list-of-documentary-requirements-for-common-government-transactions/",
-        "topics": "audit rules, government requirements, paperwork checklists, how public funds and health/project requests are checked",
+        "topics": "audit rules, government requirements, documentary checklists, public funds",
     },
 ]
 
@@ -474,21 +478,21 @@ Candidate Approved Official Sources (each starts with [Source N]):
 
 STRICT RULES:
 1. TOPIC LINK FILTERING: Pick ONLY the [Source N] numbers whose topic or government records directly match the User Prompt (for example, if the prompt is about health policies and regulations, pick only the 1 to 3 sources that fit health rules/laws/programs—do NOT pick unrelated sources just to fill up all 6). Put those exact numbers in "selected_source_ids".
-2. SUMMARIZE ONLY SELECTED SOURCES: Write a "source_summaries" entry ONLY for each source_id listed in "selected_source_ids". Explain what that source is/says and how it connects to the User Prompt in plain, child-friendly words.
-3. 5-TO-10-YEAR-OLD READING LEVEL: Write "overall_summary", every "source_summaries" item, and all 4 "solutions" as if explaining to a curious 5-to-10-year-old child.
-   - Use short, friendly, everyday words.
+2. SUMMARIZE ONLY SELECTED SOURCES: Write a "source_summaries" entry ONLY for each source_id listed in "selected_source_ids". Explain what that source is/says and how it connects to the User Prompt in plain words.
+3. 12-TO-18-YEAR-OLD READING LEVEL: Write "overall_summary", every "source_summaries" item, and all 4 "solutions" as if explaining to a curious 12-to-18-year-old child.
+   - Use everyday words.
    - No legal jargon, heavy policy buzzwords, or hard academic words. If you mention a big word like "law" or "regulation", explain it simply right away (for example: "rules that keep people safe and healthy").
-4. ACCURATE & HELPFUL 4 SOLUTIONS: Write 4 practical, real solutions that directly answer the User Prompt and match the topic (not generic filler). Each solution must have a clear title, a short focus tag, and a 1-2 sentence kid-friendly description.
+4. ACCURATE & HELPFUL 4 SOLUTIONS: Write 4 practical, real solutions that directly answer the User Prompt and match the topic (not generic filler). Each solution must have a clear title, a short focus tag, and a 5-7 sentence teen-friendly description.
 5. Never invent outside URLs or fake facts.
 
 Return ONLY valid JSON (no ```json fences) with this exact structure:
 {{
-  "overall_summary": "2-3 short, friendly sentences for a 5-to-10-year-old answering the User Prompt.",
+  "overall_summary": "5-7 short, friendly sentences for a 12-to-18-year-old answering the User Prompt.",
   "selected_source_ids": [1],
   "source_summaries": [
     {{
       "source_id": 1,
-      "summary": "1-2 simple sentences explaining what this source covers and how it helps with the User Prompt."
+      "summary": "5-7 simple sentences explaining what this source covers and how it helps with the User Prompt."
     }}
   ],
   "solutions": [
@@ -496,25 +500,25 @@ Return ONLY valid JSON (no ```json fences) with this exact structure:
       "number": "Solution 1",
       "title": "Short clear title",
       "focus": "Short topic tag",
-      "description": "1-2 simple, practical sentences for a 5-to-10-year-old."
+      "description": "5 simple, practical sentences for a 12-to-18-year-old."
     }},
     {{
       "number": "Solution 2",
       "title": "Short clear title",
       "focus": "Short topic tag",
-      "description": "1-2 simple, practical sentences for a 5-to-10-year-old."
+      "description": "5 simple, practical sentences for a 12-to-18-year-old."
     }},
     {{
       "number": "Solution 3",
       "title": "Short clear title",
       "focus": "Short topic tag",
-      "description": "1-2 simple, practical sentences for a 5-to-10-year-old."
+      "description": "5 simple, practical sentences for a 12-to-18-year-old."
     }},
     {{
       "number": "Solution 4",
       "title": "Short clear title",
       "focus": "Short topic tag",
-      "description": "1-2 simple, practical sentences for a 5-to-10-year-old."
+      "description": "5 simple, practical sentences for a 12-to-18-year-old."
     }}
   ]
 }}
