@@ -456,8 +456,6 @@ def ask_gemini_json(ai_prompt: str, max_tokens: int) -> dict:
                 raise
             time.sleep(0.3)
     raise GeminiBusyError(str(last_error) if last_error else "no model answered in time")
-
-
 def generate_gemini_analysis(prompt: str, sources_context: str) -> dict:
     if not get_ai_client():
         return {
@@ -473,7 +471,7 @@ def generate_gemini_analysis(prompt: str, sources_context: str) -> dict:
         else "No related records were found in the allowed official links for this prompt."
     )
 
-ai_prompt = f"""You are AnInag, a helpful civic and policy guide for the Philippines.
+    ai_prompt = f"""You are AnInag, a helpful civic and policy guide for the Philippines.
 User Prompt: "{prompt}"
 
 Reference Context from Approved Catalog:
@@ -517,11 +515,11 @@ Return ONLY valid JSON (no ```json fences) with this exact structure:
       "focus": "Home / School / Community / Official Rule",
       "description": "3 simple, practical sentences for a 12-to-18-year-old."
     }},
-  {{
-        "number": "Solution 4",
-        "title": "Short clear title",
-        "focus": "Home / School / Community / Official Rule",
-        "description": "3 clear, practical sentences for a 12-to-18-year-old."
+    {{
+      "number": "Solution 4",
+      "title": "Short clear title",
+      "focus": "Home / School / Community / Official Rule",
+      "description": "3 clear, practical sentences for a 12-to-18-year-old."
     }}
   ]
 }}
@@ -548,7 +546,6 @@ Return ONLY valid JSON (no ```json fences) with this exact structure:
                 continue
             if item.get("summary"):
                 summary_map[source_id] = str(item["summary"]).strip()
-
         if not selected_ids and summary_map:
             selected_ids = list(summary_map.keys())
 
