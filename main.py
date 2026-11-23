@@ -567,6 +567,7 @@ Return ONLY valid JSON (no ```json fences) with this exact structure:
             "solutions": clean_solutions,
         }
     except Exception as e:
+    print(f"[ANINAG_GEMINI_ERR] {type(e).__name__}: {e}", flush=True)
         err_detail = str(e).strip() or type(e).__name__
         print(f"[AnInag] Gemini final error ({type(e).__name__}): {err_detail}", flush=True)
         if isinstance(e, GeminiBusyError):
