@@ -391,11 +391,13 @@ def extract_text_from_response(resp) -> str:
 def call_gemini_model(model_name: str, prompt: str, max_tokens: int):
     client = get_ai_client()
     cfg = build_gemini_gen_config(max_tokens)
+    search_tools = [{"type": "google_search"}]
     if hasattr(client, "interactions"):
         try:
             return client.interactions.create(
                 model=model_name,
                 input=prompt,
+                tools=search_tools,
                 generation_config=cfg,
                 store=False,
             )
@@ -405,6 +407,7 @@ def call_gemini_model(model_name: str, prompt: str, max_tokens: int):
                     model=model_name,
                     input=prompt,
                     generation_config=cfg,
+                    store=False,
                 )
             except TypeError:
                 return client.interactions.create(
@@ -470,55 +473,61 @@ def generate_gemini_analysis(prompt: str, sources_context: str) -> dict:
         else "No related records were found in the allowed official links for this prompt."
     )
 
-    ai_prompt = f"""You are AnInag, a helpful civic and problem-solving assistant.
+    ai_prompt = f"""You are AnInag, a helpful civic and policy guide for the Philippines.
 User Prompt: "{prompt}"
 
-Candidate Approved Official Sources (each starts with [Source N]):
+Reference Context from Approved Catalog:
 {context_section}
 
-STRICT RULES:
-1. TOPIC LINK FILTERING: Pick ONLY the [Source N] numbers whose topic or government records directly match the User Prompt (for example, if the prompt is about health policies and regulations, pick only the 1 to 3 sources that fit health rules/laws/programs—do NOT pick unrelated sources just to fill up all 6). Put those exact numbers in "selected_source_ids".
-2. SUMMARIZE ONLY SELECTED SOURCES: Write a "source_summaries" entry ONLY for each source_id listed in "selected_source_ids". Explain what that source is/says and how it connects to the User Prompt in plain words.
-3. 12-TO-18-YEAR-OLD READING LEVEL: Write "overall_summary", every "source_summaries" item, and all 4 "solutions" as if explaining to a curious 12-to-18-year-old child.
-   - Use everyday words.
-   - No legal jargon, heavy policy buzzwords, or hard academic words. If you mention a big word like "law" or "regulation", explain it simply right away (for example: "rules that keep people safe and healthy").
-4. ACCURATE & HELPFUL 4 SOLUTIONS: Write 4 practical, real solutions that directly answer the User Prompt and match the topic (not generic filler). Each solution must have a clear title, a short focus tag, and a 5-7 sentence teen-friendly description.
-5. Never invent outside URLs or fake facts.
+ai_prompt = f"""You are AnInag, a helpful civic and policy guide for the Philippines.
+User Prompt: "{prompt}"
+
+Reference Context from Approved Catalog:
+{context_section}
+
+INSTRUCTIONS:
+1. Give a rich, clear, substantial explanation of actual Philippine laws, rules, policies, or government programs that directly match the User Prompt. Do NOT give repetitive or vague answers—mention real, specific Philippine policies/regulations (such as specific Republic Acts, Executive Orders, or agency rules) that apply to the user's topic.
+2. Write in a warm, clear style that a curious 12-to-18-year-old can easily understand:
+   - Use simple everyday words and short, friendly sentences.
+   - Avoid heavy legal jargon or big complicated terms; whenever you mention a law or rule, explain right away in simple words what it does to help people or nature.
+3. For each specific law, rule, or policy you mention, include its real, accessible URL (preferring official Philippine government or law pages when available, and never guessing or making up broken URLs) under "specific_policies".
+4. Give 4 concrete, varied, practical solutions tailored to the User Prompt and those real Philippine rules, also written in simple 12-to-18-year-old language.
 
 Return ONLY valid JSON (no ```json fences) with this exact structure:
 {{
-  "overall_summary": "5-7 short, friendly sentences for a 12-to-18-year-old answering the User Prompt.",
-  "selected_source_ids": [1],
-  "source_summaries": [
+  "overall_summary": "10 clear sentences for a 12-to-18-year-old explaining the key Philippine rules/policies for this topic and why they matter.",
+  "specific_policies": [
     {{
-      "source_id": 1,
-      "summary": "5-7 simple sentences explaining what this source covers and how it helps with the User Prompt."
+      "title": "Exact name of the specific Philippine law, order, or policy",
+      "agency_or_type": "Republic Act / Executive Order / Agency Rule",
+      "summary": "10 simple sentences explaining what this specific rule does in friendly words.",
+      "url": "https://..."
     }}
   ],
   "solutions": [
     {{
       "number": "Solution 1",
       "title": "Short clear title",
-      "focus": "Short topic tag",
-      "description": "5 simple, practical sentences for a 12-to-18-year-old."
+      "focus": "Home / School / Community / Official Rule",
+      "description": "3 simple, practical sentences for a 12-to-18-year-old."
     }},
     {{
       "number": "Solution 2",
       "title": "Short clear title",
-      "focus": "Short topic tag",
-      "description": "5 simple, practical sentences for a 12-to-18-year-old."
+      "focus": "Home / School / Community / Official Rule",
+      "description": "3 simple, practical sentences for a 12-to-18-year-old."
     }},
     {{
       "number": "Solution 3",
       "title": "Short clear title",
-      "focus": "Short topic tag",
-      "description": "5 simple, practical sentences for a 12-to-18-year-old."
+      "focus": "Home / School / Community / Official Rule",
+      "description": "3 simple, practical sentences for a 12-to-18-year-old.."
     }},
     {{
       "number": "Solution 4",
       "title": "Short clear title",
-      "focus": "Short topic tag",
-      "description": "5 simple, practical sentences for a 12-to-18-year-old."
+      "focus": "Home / School / Community / Official Rule",
+      "description": "3 simple, practical sentences for a 12-to-18-year-old."
     }}
   ]
 }}
