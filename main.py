@@ -36,11 +36,15 @@ def get_ai_client():
                     _ai_client = genai.Client(
                         api_key=GEMINI_API_KEY,
                         http_options=genai_types.HttpOptions(
+                            api_version="v1beta",
                             retry_options=genai_types.HttpRetryOptions(attempts=1),
                         ),
                     )
                 except Exception:
-                    _ai_client = genai.Client(api_key=GEMINI_API_KEY)
+                    _ai_client = genai.Client(
+                        api_key=GEMINI_API_KEY,
+                        http_options={"api_version": "v1beta"},
+                    )
     return _ai_client
 
 
@@ -98,9 +102,10 @@ SAVE_POOL = ThreadPoolExecutor(max_workers=1)
 GEMINI_TIMEOUT_SECONDS = 28
 
 GEMINI_MODELS = [
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
-    "gemini-3-flash-preview",
+    "gemini-3.8-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
 ]
 _dead_models = set()
 GEMINI_TOTAL_BUDGET_SECONDS = 55
