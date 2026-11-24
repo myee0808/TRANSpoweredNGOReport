@@ -289,7 +289,7 @@ def start_page_refresher():
 
 
 def fetch_web_documents(query: str) -> List[Dict]:
-    """Reads approved pages from memory with their topic hints so AI can filter strictly."""
+    """Reads all 6 approved pages from memory with their topic hints so AI can filter strictly."""
     with _page_cache_lock:
         fetched = [_page_cache.get(url) or build_fallback_source(url) for url in ALLOWED_URLS]
 
@@ -309,37 +309,17 @@ def extract_json_object(text: str) -> dict:
     cleaned = text.strip()
     if cleaned.startswith("```"):
         cleaned = RE_FENCE.sub("", cleaned).strip()
-
-    def _try_parse(candidate: str) -> dict:
-        no_trailing = re.sub(r",\s*([}\]])", r"\1", candidate)
-        return json.loads(no_trailing)
-
     try:
-        return _try_parse(cleaned)
+        return json.loads(cleaned)
     except Exception:
         match = RE_JSON_OBJ.search(cleaned)
-        if not match:
-            raise
-        candidate = match.group(0)
-        try:
-            return _try_parse(candidate)
-        except json.JSONDecodeError:
-            repaired = re.sub(
-                r'(?<![\\:\{\[\,\s])"(?![\s,\}\]:])',
-                r"'",
-                candidate,
-            )
-            return _try_parse(repaired)
+        if match:
+            return json.loads(match.group(0))
+        raise
 
 
 class GeminiBusyError(Exception):
     """Every Gemini model we tried was busy or unavailable."""
-
-
-def is_quota_429_error(e: Exception) -> bool:
-    code = getattr(e, "status_code", None) or getattr(e, "code", None)
-    text = f"{type(e).__name__} {e}".lower()
-    return code == 429 or "429" in text or "too_many_requests" in text or "exceeded your current quota" in text
 
 
 def is_busy_error(e: Exception) -> bool:
@@ -370,10 +350,11 @@ def is_missing_model_error(e: Exception) -> bool:
 
 
 def build_gemini_gen_config(max_tokens: int) -> dict:
-    return {
+    cfg = {
         "max_output_tokens": max_tokens,
         "temperature": 0.35,
     }
+    
 
 
 def extract_text_from_response(resp) -> str:
@@ -428,7 +409,7 @@ def call_gemini_model(model_name: str, prompt: str, max_tokens: int):
     return client.models.generate_content(
         model=model_name,
         contents=prompt,
-        config=cfg,
+        config={"max_output_tokens": max_tokens, "temperature": 0.35},
     )
 
 
@@ -459,9 +440,7 @@ def ask_gemini_json(ai_prompt: str, max_tokens: int) -> dict:
         except Exception as e:
             last_error = e
             print(f"[AnInag] {model_name} failed: {type(e).__name__}: {str(e)[:200]}", flush=True)
-            if is_quota_429_error(e):
-                break
-            if not is_busy_error(e) and not is_missing_model_error(e) and not isinstance(e, json.JSONDecodeError):
+            if not is_busy_error(e) and not is_missing_model_error(e):
                 raise
             time.sleep(0.3)
     raise GeminiBusyError(str(last_error) if last_error else "no model answered in time")
@@ -482,29 +461,30 @@ def generate_gemini_analysis(prompt: str, sources_context: str) -> dict:
         else "No related records were found in the allowed official links for this prompt."
     )
 
-    ai_prompt = f"""You are a civic and policy guide for 12-to-18-year-olds in the Philippines.
+    ai_prompt = f"""You are AnInag, a helpful civic and policy guide for the Philippines.
 User Prompt: "{prompt}"
 
-Approved Sources (ONLY cite from these exact source IDs):
+Reference Context from Approved Catalog:
 {context_section}
 
 INSTRUCTIONS:
 1. Give a rich, clear, substantial explanation of actual Philippine laws, rules, policies, or government programs that directly match the User Prompt. Do NOT give repetitive or vague answers—mention real, specific Philippine policies or regulations (such as specific Republic Acts, Executive Orders, or agency rules) that apply to the user's topic.
 2. Jump straight into explaining the topic. Do NOT include any greeting, welcome, or self-introduction (never say "Hello!", "Hi!", or "I am AnInag").
 3. Write in a warm, clear style that a curious 12-to-18-year-old can easily understand:
-  - Use simple everyday words and short, friendly sentences.
-  - Avoid heavy legal jargon or big complicated terms; whenever you mention a law or rule, explain right away in simple words what it does to help people or nature.
-4. Pick ONLY the source IDs (1, 2, 3, ...) from the Approved Sources above that genuinely match the user's topic, and write a short kid-friendly summary for each chosen source_id in "source_summaries". Only reference sources from the Approved Sources list—never invent URLs.
-5. Give 4 concrete, varied, practical solutions tailored to the User Prompt and those real Philippine rules, also written in simple 12-to-18-year-old language.
-6. Never use double quotes (") inside any text value—use single quotes (') when naming laws or programs.
+    Use simple everyday words and short, friendly sentences.
+    Avoid heavy legal jargon or big complicated terms; whenever you mention a law or rule, explain right away in simple words what it does to help people or nature.
+3. For each specific law, rule, or policy you mention, include its real, accessible URL (preferring official Philippine government or law pages when available, and never guessing or making up broken URLs) under "specific_policies".
+4. Give 4 concrete, varied, practical solutions tailored to the User Prompt and those real Philippine rules, also written in simple 12-to-18-year-old language.
+
 Return ONLY valid JSON (no ```json fences) with this exact structure:
 {{
-  "overall_summary": "5-7 clear sentences for a 12-to-18-year-old jumping straight into the key Philippine rules/policies for this topic and why they matter, with no greeting or self-introduction.",
-  "selected_source_ids": [1],
-  "source_summaries": [
+  "overall_summary": "5-7 clear sentences for a 12-to-18-year-old explaining the key Philippine rules/policies for this topic and why they matter.",
+  "specific_policies": [
     {{
-      "source_id": 1,
-      "summary": "2-3 simple sentences explaining how this approved source relates to the topic."
+      "title": "Exact name of the specific Philippine law, order, or policy",
+      "agency_or_type": "Republic Act / Executive Order / Agency Rule",
+      "summary": "5-7 simple sentences explaining what this specific rule does in friendly words.",
+      "url": "https://..."
     }}
   ],
   "solutions": [
@@ -537,7 +517,7 @@ Return ONLY valid JSON (no ```json fences) with this exact structure:
 """
 
     try:
-        data = ask_gemini_json(ai_prompt, max_tokens=4000)
+        data = ask_gemini_json(ai_prompt, max_tokens=2800)
 
         selected_ids: List[int] = []
         for raw_id in data.get("selected_source_ids", []) or []:
@@ -589,7 +569,6 @@ Return ONLY valid JSON (no ```json fences) with this exact structure:
             "solutions": [],
         }
 
-
 def save_database_in_background():
     SAVE_POOL.submit(save_database, database)
 
@@ -631,10 +610,9 @@ def run_search(payload: SearchQuery):
         selected_ids = ai_output.get("selected_source_ids", [])
         ai_source_summaries = ai_output.get("source_summaries", {})
 
-        # Keep ONLY the sources Gemini selected, or fall back to top scored catalog sources if empty
-        ids_to_use = selected_ids if selected_ids else [doc_id for doc_id in list(candidate_by_id.keys())[:2]]
+        # Keep ONLY the sources Gemini selected for this topic
         filtered_results = []
-        for sid in ids_to_use:
+        for sid in selected_ids:
             doc = candidate_by_id.get(sid)
             if not doc:
                 continue
@@ -648,7 +626,7 @@ def run_search(payload: SearchQuery):
                 "takeaway": summary_text,
                 "ai_summarized": bool(ai_source_summaries.get(sid)),
                 "citation_url": doc["url"],
-                "badge": "Matched Source" if sid in selected_ids else "Approved Source",
+                "badge": "Matched Source",
             })
 
         cached = {
@@ -874,7 +852,7 @@ def home():
     <main class="chat-shell" id="chatThread">
         <section class="welcome-card">
             <h1>AnInag AI Chatbot</h1>
-            <p>Enter a prompt to get a kid-friendly summary, <strong>4 tailored solutions</strong>, and only the <strong>matching official links</strong> from our approved sources. Every prompt awards <strong>+1 point</strong> (<strong>6 points = 1 tree</strong>).</p>
+            <p>Enter a prompt to get a kid-friendly summary, <strong>4 tailored solutions</strong>, and only the <strong>matching official links</strong> from our 6 approved sources. Every prompt awards <strong>+1 point</strong> (<strong>6 points = 1 tree</strong>).</p>
         </section>
     </main>
 
@@ -1042,7 +1020,7 @@ def home():
                             <a href="${escapeHtml(res.citation_url)}" target="_blank" class="source-link">🔗 Open approved source (${escapeHtml(res.journal)}) ↗</a>
                         </div>
                     `).join('')
-                    : `<div class="empty-sources-box">No matching links from the approved sources fit this specific topic.</div>`;
+                    : `<div class="empty-sources-box">No matching links from the 6 approved sources fit this specific topic.</div>`;
 
                 loadingCard.innerHTML = `
                     <div class="bot-header">
@@ -1075,20 +1053,18 @@ def home():
             const sol = list[solIndex];
             if (!sol) return;
 
-            const userId = (document.getElementById("userIdInput")?.value || "").trim();
-            const url = new URL("https://aipoweredsolution-olcy.onrender.com/progress-tracker.html");
-            url.searchParams.set("from_aninag", "1");
-            url.searchParams.set("new_task_title", String(sol.title || "AnInag Action Solution").slice(0, 140));
-            if (sol.focus) {
-                url.searchParams.set("new_task_focus", String(sol.focus).slice(0, 80));
+            const userId = (document.getElementById('userIdInput')?.value.trim()) || 'user_001';
+            const trackerUrl = new URL('https://aipoweredsolution-olcy.onrender.com/progress-tracker.html');
+
+            if (userId && userId !== 'user_001') {
+                trackerUrl.searchParams.set('user_id', userId);
             }
-            if (sol.description) {
-                url.searchParams.set("new_task_desc", String(sol.description).slice(0, 300));
-            }
-            if (userId && userId !== "user_001") {
-                url.searchParams.set("user_id", userId);
-            }
-            window.location.href = url.toString();
+            trackerUrl.searchParams.set('new_task_title', sol.title || sol.number || 'Selected Solution');
+            trackerUrl.searchParams.set('new_task_focus', sol.focus || 'AnInag Action Item');
+            trackerUrl.searchParams.set('new_task_desc', sol.description || '');
+            trackerUrl.searchParams.set('from_aninag', '1');
+
+            window.location.href = trackerUrl.toString();
         }
     </script>
 </body>
