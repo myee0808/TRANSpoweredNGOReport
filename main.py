@@ -393,29 +393,19 @@ def extract_text_from_response(resp) -> str:
 def call_gemini_model(model_name: str, prompt: str, max_tokens: int):
     client = get_ai_client()
     cfg = build_gemini_gen_config(max_tokens)
-    search_tools = [{"type": "google_search"}]
     if hasattr(client, "interactions"):
         try:
             return client.interactions.create(
                 model=model_name,
                 input=prompt,
-                tools=search_tools,
                 generation_config=cfg,
                 store=False,
             )
         except TypeError:
-            try:
-                return client.interactions.create(
-                    model=model_name,
-                    input=prompt,
-                    generation_config=cfg,
-                    store=False,
-                )
-            except TypeError:
-                return client.interactions.create(
-                    model=model_name,
-                    input=prompt,
-                )
+            return client.interactions.create(
+                model=model_name,
+                input=prompt,
+            )
     return client.models.generate_content(
         model=model_name,
         contents=prompt,
