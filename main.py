@@ -359,6 +359,7 @@ def build_gemini_gen_config(max_tokens: int) -> dict:
     return {
         "max_output_tokens": max_tokens,
         "temperature": 0.35,
+        "response_mime_type": "application/json",
     }
 
 
@@ -482,7 +483,7 @@ INSTRUCTIONS:
    - Avoid heavy legal jargon or big complicated terms; whenever you mention a law or rule, explain right away in simple words what it does to help people or nature.
 4. Pick ONLY the source IDs (1, 2, 3, ...) from the Approved Sources above that genuinely match the user's topic, and write a short kid-friendly summary for each chosen source_id in "source_summaries". Only reference sources from the Approved Sources list—never invent URLs.
 5. Give 4 concrete, varied, practical solutions tailored to the User Prompt and those real Philippine rules, also written in simple 12-to-18-year-old language.
-
+6. Never use double quotes (") inside any text value—use single quotes (') when naming laws or programs.
 Return ONLY valid JSON (no ```json fences) with this exact structure:
 {{
   "overall_summary": "5-7 clear sentences for a 12-to-18-year-old jumping straight into the key Philippine rules/policies for this topic and why they matter, with no greeting or self-introduction.",
@@ -523,7 +524,7 @@ Return ONLY valid JSON (no ```json fences) with this exact structure:
 """
 
     try:
-        data = ask_gemini_json(ai_prompt, max_tokens=2800)
+        data = ask_gemini_json(ai_prompt, max_tokens=4000)
 
         selected_ids: List[int] = []
         for raw_id in data.get("selected_source_ids", []) or []:
