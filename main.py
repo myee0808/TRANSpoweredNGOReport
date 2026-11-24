@@ -98,10 +98,9 @@ SAVE_POOL = ThreadPoolExecutor(max_workers=1)
 GEMINI_TIMEOUT_SECONDS = 28
 
 GEMINI_MODELS = [
-    "gemini-3.8-flash",
-    "gemini-3.6-flash",
-    "gemini-3.5-flash-lite",
-    "gemini-3.1-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-3-flash-preview",
 ]
 _dead_models = set()
 GEMINI_TOTAL_BUDGET_SECONDS = 55
